@@ -65,6 +65,8 @@ qemu: image kernel
 		-append "console=ttyS0" \
 		-nographic \
 		-serial $(QEMU_SERIAL) \
+		-object rng-random,filename=/dev/urandom,id=rng0 \
+		-device virtio-rng-pci,rng=rng0 \
 		-chardev socket,id=virtiocon0,path=$(VIRTIO_SOCK),server=on,wait=$(QEMU_WAIT) \
 		-device virtio-serial-pci \
 		-device virtserialport,chardev=virtiocon0,name=virtio-port

@@ -26,6 +26,16 @@ else
   echo "[init] /sys/class/virtio-ports missing" > /dev/console
 fi
 
+if modprobe virtio_rng > /dev/console 2>&1; then
+  echo "[init] loaded virtio_rng" > /dev/console
+fi
+if [ -e /dev/hwrng ]; then
+  echo "[init] starting rngd" > /dev/console
+  rngd -r /dev/hwrng -o /dev/random > /dev/console 2>&1 &
+else
+  echo "[init] /dev/hwrng missing" > /dev/console
+fi
+
 echo "[init] starting sandboxd" > /dev/console
 
 exec /usr/bin/sandboxd

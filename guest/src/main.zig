@@ -58,6 +58,35 @@ pub fn main() !void {
     }
 }
 
+fn tryOpenVirtioPath(path: []const u8) !?std.fs.File {
+    const fd = std.posix.open(path, .{ .ACCMODE = .RDWR, .NONBLOCK = true, .CLOEXEC = true }, 0) catch |err| switch (err) {
+        error.FileNotFound, error.NoDevice => return null,
+        else => return err,
+    };
+
+    const original_flags = try std.posix.fcntl(fd, std.posix.F.GETFL, 0);
+    const nonblock_flag_u32: u32 = @bitCast(std.posix.O{ .NONBLOCK = true });
+    const nonblock_flag: usize = @intCast(nonblock_flag_u32);
+    _ = try std.posix.fcntl(fd, std.posix.F.SETFL, original_flags & ~nonblock_flag);
+
+    return std.fs.File{ .handle = fd };
+}
+
+fn scanVirtioPorts() !?std.fs.File {
+    var dev_dir = std.fs.openDirAbsolute("/dev", .{ .iterate = true }) catch return null;
+    defer dev_dir.close();
+
+    var it = dev_dir.iterate();
+    var path_buf: [64]u8 = undefined;
+    while (try it.next()) |entry| {
+        if (!std.mem.startsWith(u8, entry.name, "vport")) continue;
+        const path = try std.fmt.bufPrint(&path_buf, "/dev/{s}", .{entry.name});
+        if (try tryOpenVirtioPath(path)) |file| return file;
+    }
+
+    return null;
+}
+
 fn openVirtioPort() !std.fs.File {
     const paths = [_][]const u8{
         "/dev/vport0p1",
@@ -69,18 +98,10 @@ fn openVirtioPort() !std.fs.File {
 
     while (true) {
         for (paths) |path| {
-            const fd = std.posix.open(path, .{ .ACCMODE = .RDWR, .NONBLOCK = true, .CLOEXEC = true }, 0) catch |err| switch (err) {
-                error.FileNotFound, error.NoDevice => continue,
-                else => return err,
-            };
-
-            const original_flags = try std.posix.fcntl(fd, std.posix.F.GETFL, 0);
-            const nonblock_flag_u32: u32 = @bitCast(std.posix.O{ .NONBLOCK = true });
-            const nonblock_flag: usize = @intCast(nonblock_flag_u32);
-            _ = try std.posix.fcntl(fd, std.posix.F.SETFL, original_flags & ~nonblock_flag);
-
-            return std.fs.File{ .handle = fd };
+            if (try tryOpenVirtioPath(path)) |file| return file;
         }
+
+        if (try scanVirtioPorts()) |file| return file;
 
         if (!warned) {
             log.info("waiting for virtio port", .{});

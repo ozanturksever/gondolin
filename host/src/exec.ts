@@ -53,10 +53,63 @@ function parseArgs(argv: string[]): Args {
   let current: Command | null = null;
   let nextId = 1;
 
-  const fail = (message: string) => {
+  const fail = (message: string): never => {
     console.error(message);
     usage();
     process.exit(1);
+  };
+
+  const parseId = (value: string) => {
+    const id = Number(value);
+    if (!Number.isFinite(id)) fail("--id must be a number");
+    if (id >= nextId) nextId = id + 1;
+    return id;
+  };
+
+  const separatorIndex = argv.indexOf("--");
+  if (separatorIndex !== -1) {
+    const optionArgs = argv.slice(0, separatorIndex);
+    const commandArgs = argv.slice(separatorIndex + 1);
+    if (commandArgs.length === 0) fail("missing command after --");
+
+    current = {
+      cmd: commandArgs[0],
+      argv: commandArgs.slice(1),
+      env: [],
+      id: nextId++,
+    };
+    args.commands.push(current);
+
+    for (let i = 0; i < optionArgs.length; i += 1) {
+      const arg = optionArgs[i];
+      switch (arg) {
+        case "--sock":
+          args.sock = optionArgs[++i];
+          break;
+        case "--env":
+          current.env.push(optionArgs[++i]);
+          break;
+        case "--cwd":
+          current.cwd = optionArgs[++i];
+          break;
+        case "--id":
+          current.id = parseId(optionArgs[++i]);
+          break;
+        case "--help":
+        case "-h":
+          usage();
+          process.exit(0);
+        default:
+          fail(`Unknown argument: ${arg}`);
+      }
+    }
+
+    return args;
+  }
+
+  const requireCurrent = (flag: string): Command => {
+    if (!current) fail(`${flag} requires --cmd`);
+    return current!;
   };
 
   for (let i = 0; i < argv.length; i += 1) {
@@ -69,24 +122,26 @@ function parseArgs(argv: string[]): Args {
         current = { cmd: argv[++i], argv: [], env: [], id: nextId++ };
         args.commands.push(current);
         break;
-      case "--arg":
-        if (!current) fail("--arg requires --cmd");
-        current.argv.push(argv[++i]);
+      case "--arg": {
+        const command = requireCurrent("--arg");
+        command.argv.push(argv[++i]);
         break;
-      case "--env":
-        if (!current) fail("--env requires --cmd");
-        current.env.push(argv[++i]);
+      }
+      case "--env": {
+        const command = requireCurrent("--env");
+        command.env.push(argv[++i]);
         break;
-      case "--cwd":
-        if (!current) fail("--cwd requires --cmd");
-        current.cwd = argv[++i];
+      }
+      case "--cwd": {
+        const command = requireCurrent("--cwd");
+        command.cwd = argv[++i];
         break;
-      case "--id":
-        if (!current) fail("--id requires --cmd");
-        current.id = Number(argv[++i]);
-        if (!Number.isFinite(current.id)) fail("--id must be a number");
-        if (current.id >= nextId) nextId = current.id + 1;
+      }
+      case "--id": {
+        const command = requireCurrent("--id");
+        command.id = parseId(argv[++i]);
         break;
+      }
       case "--help":
       case "-h":
         usage();
@@ -99,9 +154,12 @@ function parseArgs(argv: string[]): Args {
 }
 
 function usage() {
+  console.log("Usage:");
+  console.log("  node dist/exec.js --sock PATH -- CMD [ARGS...]");
   console.log(
-    "Usage: node dist/exec.js --sock PATH --cmd CMD [--arg ARG] [--env KEY=VALUE] [--cwd PATH] [--cmd CMD ...]"
+    "  node dist/exec.js --sock PATH --cmd CMD [--arg ARG] [--env KEY=VALUE] [--cwd PATH] [--cmd CMD ...]"
   );
+  console.log("Use -- to pass a command and its arguments directly.");
   console.log("Arguments apply to the most recent --cmd.");
 }
 
