@@ -99,7 +99,7 @@ pub const Decoder = struct {
                 const len = try self.readUInt(add);
                 if (len > std.math.maxInt(usize)) return Error.Overflow;
                 const count = @as(usize, @intCast(len));
-                var items = try self.allocator.alloc(Value, count);
+                const items = try self.allocator.alloc(Value, count);
                 for (items, 0..) |*item, idx| {
                     _ = idx;
                     item.* = try self.decodeValue();
@@ -110,7 +110,7 @@ pub const Decoder = struct {
                 const len = try self.readUInt(add);
                 if (len > std.math.maxInt(usize)) return Error.Overflow;
                 const count = @as(usize, @intCast(len));
-                var entries = try self.allocator.alloc(Entry, count);
+                const entries = try self.allocator.alloc(Entry, count);
                 for (entries, 0..) |*entry, idx| {
                     _ = idx;
                     entry.* = .{
@@ -239,10 +239,10 @@ pub fn writeNull(writer: anytype) !void {
 const testing = std.testing;
 
 test "encode/decode simple map" {
-    var buf = std.ArrayList(u8).init(testing.allocator);
-    defer buf.deinit();
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(testing.allocator);
 
-    const w = buf.writer();
+    const w = buf.writer(testing.allocator);
     try writeMapStart(w, 2);
     try writeText(w, "t");
     try writeText(w, "exec_request");
