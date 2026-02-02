@@ -1,28 +1,7 @@
 const std = @import("std");
-const cbor = @import("sandboxd").cbor;
+const protocol = @import("sandboxd").protocol;
 
 const log = std.log.scoped(.sandboxd);
-
-const ProtocolError = error{
-    InvalidType,
-    MissingField,
-    UnexpectedType,
-    InvalidValue,
-};
-
-const ExecRequest = struct {
-    id: u32,
-    cmd: []const u8,
-    argv: []const []const u8,
-    env: []const []const u8,
-    cwd: ?[]const u8,
-    stdin: bool,
-};
-
-const StdinData = struct {
-    data: []const u8,
-    eof: bool,
-};
 
 const Termination = struct {
     exit_code: i32,
@@ -39,23 +18,16 @@ pub fn main() !void {
     const virtio_fd: std.posix.fd_t = virtio.handle;
 
     while (true) {
-        const frame = readFrame(allocator, virtio_fd) catch |err| {
+        const frame = protocol.readFrame(allocator, virtio_fd) catch |err| {
             if (err == error.EndOfStream) break;
             log.err("failed to read frame: {s}", .{@errorName(err)});
             continue;
         };
         defer allocator.free(frame);
 
-        var dec = cbor.Decoder.init(allocator, frame);
-        const root = dec.decodeValue() catch |err| {
-            log.err("failed to decode cbor: {s}", .{@errorName(err)});
-            continue;
-        };
-        defer cbor.freeValue(allocator, root);
-
-        const req = parseExecRequest(allocator, root) catch |err| {
+        const req = protocol.decodeExecRequest(allocator, frame) catch |err| {
             log.err("invalid exec_request: {s}", .{@errorName(err)});
-            _ = sendError(allocator, virtio_fd, 0, "invalid_request", "invalid exec_request") catch {};
+            _ = protocol.sendError(allocator, virtio_fd, 0, "invalid_request", "invalid exec_request") catch {};
             continue;
         };
         defer {
@@ -65,78 +37,12 @@ pub fn main() !void {
 
         handleExec(allocator, virtio_fd, req) catch |err| {
             log.err("exec handling failed: {s}", .{@errorName(err)});
-            _ = sendError(allocator, virtio_fd, req.id, "exec_failed", "failed to execute") catch {};
+            _ = protocol.sendError(allocator, virtio_fd, req.id, "exec_failed", "failed to execute") catch {};
         };
     }
 }
 
-fn parseExecRequest(allocator: std.mem.Allocator, root: cbor.Value) !ExecRequest {
-    const map = try expectMap(root);
-    const msg_type = try expectText(cbor.getMapValue(map, "t") orelse return ProtocolError.MissingField);
-    if (!std.mem.eql(u8, msg_type, "exec_request")) {
-        return ProtocolError.UnexpectedType;
-    }
-
-    const id_val = cbor.getMapValue(map, "id") orelse return ProtocolError.MissingField;
-    const id = try expectU32(id_val);
-
-    const payload_val = cbor.getMapValue(map, "p") orelse return ProtocolError.MissingField;
-    const payload = try expectMap(payload_val);
-
-    const cmd = try expectText(cbor.getMapValue(payload, "cmd") orelse return ProtocolError.MissingField);
-
-    const argv = try parseTextArray(allocator, cbor.getMapValue(payload, "argv"));
-    errdefer allocator.free(argv);
-
-    const env = try parseTextArray(allocator, cbor.getMapValue(payload, "env"));
-    errdefer allocator.free(env);
-
-    var cwd: ?[]const u8 = null;
-    if (cbor.getMapValue(payload, "cwd")) |cwd_val| {
-        cwd = try expectText(cwd_val);
-    }
-
-    var stdin_flag = false;
-    if (cbor.getMapValue(payload, "stdin")) |stdin_val| {
-        stdin_flag = try expectBool(stdin_val);
-    }
-
-    return ExecRequest{
-        .id = id,
-        .cmd = cmd,
-        .argv = argv,
-        .env = env,
-        .cwd = cwd,
-        .stdin = stdin_flag,
-    };
-}
-
-fn parseStdinData(root: cbor.Value, expected_id: u32) !StdinData {
-    const map = try expectMap(root);
-    const msg_type = try expectText(cbor.getMapValue(map, "t") orelse return ProtocolError.MissingField);
-    if (!std.mem.eql(u8, msg_type, "stdin_data")) {
-        return ProtocolError.UnexpectedType;
-    }
-
-    const id_val = cbor.getMapValue(map, "id") orelse return ProtocolError.MissingField;
-    const id = try expectU32(id_val);
-    if (id != expected_id) return ProtocolError.InvalidValue;
-
-    const payload_val = cbor.getMapValue(map, "p") orelse return ProtocolError.MissingField;
-    const payload = try expectMap(payload_val);
-
-    const data_val = cbor.getMapValue(payload, "data") orelse return ProtocolError.MissingField;
-    const data = try expectBytes(data_val);
-
-    var eof = false;
-    if (cbor.getMapValue(payload, "eof")) |eof_val| {
-        eof = try expectBool(eof_val);
-    }
-
-    return .{ .data = data, .eof = eof };
-}
-
-fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: ExecRequest) !void {
+fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: protocol.ExecRequest) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const arena_alloc = arena.allocator();
@@ -208,6 +114,18 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: Exec
         stdin_fd = stdin_pipe.?[1];
     }
 
+    const original_flags = try std.posix.fcntl(virtio_fd, std.posix.F.GETFL, 0);
+    const nonblock_flag_u32: u32 = @bitCast(std.posix.O{ .NONBLOCK = true });
+    const nonblock_flag: usize = @intCast(nonblock_flag_u32);
+    _ = try std.posix.fcntl(virtio_fd, std.posix.F.SETFL, original_flags | nonblock_flag);
+    defer _ = std.posix.fcntl(virtio_fd, std.posix.F.SETFL, original_flags) catch {};
+
+    var writer = protocol.FrameWriter.init(allocator);
+    defer writer.deinit();
+
+    var stdin_reader = protocol.FrameReader.init(allocator);
+    defer stdin_reader.deinit();
+
     var stdout_open = true;
     var stderr_open = true;
     var stdin_open = req.stdin;
@@ -216,10 +134,11 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: Exec
     var buffer: [8192]u8 = undefined;
 
     while (true) {
-        if (status != null and !stdout_open and !stderr_open) break;
+        if (status != null and !stdout_open and !stderr_open and !writer.hasPending()) break;
 
         var pollfds: [3]std.posix.pollfd = undefined;
         var nfds: usize = 0;
+        var virtio_index: ?usize = null;
 
         if (stdout_open) {
             pollfds[nfds] = .{ .fd = stdout_pipe[0], .events = std.posix.POLL.IN, .revents = 0 };
@@ -229,9 +148,21 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: Exec
             pollfds[nfds] = .{ .fd = stderr_pipe[0], .events = std.posix.POLL.IN, .revents = 0 };
             nfds += 1;
         }
-        if (stdin_open) {
-            pollfds[nfds] = .{ .fd = virtio_fd, .events = std.posix.POLL.IN, .revents = 0 };
+
+        var virtio_events: i16 = 0;
+        if (stdin_open) virtio_events |= std.posix.POLL.IN;
+        if (writer.hasPending()) virtio_events |= std.posix.POLL.OUT;
+        if (virtio_events != 0) {
+            virtio_index = nfds;
+            pollfds[nfds] = .{ .fd = virtio_fd, .events = virtio_events, .revents = 0 };
             nfds += 1;
+        }
+
+        if (nfds == 0) {
+            if (status == null) {
+                status = std.posix.waitpid(pid, 0).status;
+            }
+            continue;
         }
 
         _ = try std.posix.poll(pollfds[0..nfds], 100);
@@ -246,7 +177,10 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: Exec
                     stdout_open = false;
                     std.posix.close(stdout_pipe[0]);
                 } else {
-                    try sendExecOutput(allocator, virtio_fd, req.id, "stdout", buffer[0..n]);
+                    const payload = try protocol.encodeExecOutput(allocator, req.id, "stdout", buffer[0..n]);
+                    defer allocator.free(payload);
+                    try writer.enqueue(payload);
+                    try writer.flush(virtio_fd);
                 }
             }
         }
@@ -260,16 +194,21 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: Exec
                     stderr_open = false;
                     std.posix.close(stderr_pipe[0]);
                 } else {
-                    try sendExecOutput(allocator, virtio_fd, req.id, "stderr", buffer[0..n]);
+                    const payload = try protocol.encodeExecOutput(allocator, req.id, "stderr", buffer[0..n]);
+                    defer allocator.free(payload);
+                    try writer.enqueue(payload);
+                    try writer.flush(virtio_fd);
                 }
             }
         }
 
-        if (stdin_open) {
-            const revents = pollfds[index].revents;
-            index += 1;
-            if ((revents & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0) {
-                stdin_open = handleStdin(allocator, virtio_fd, stdin_fd.?, req.id) catch |err| blk: {
+        if (virtio_index) |vindex| {
+            const revents = pollfds[vindex].revents;
+            if ((revents & std.posix.POLL.OUT) != 0) {
+                try writer.flush(virtio_fd);
+            }
+            if (stdin_open and (revents & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0) {
+                stdin_open = handleStdin(allocator, &stdin_reader, virtio_fd, stdin_fd.?, req.id) catch |err| blk: {
                     log.err("stdin handling failed: {s}", .{@errorName(err)});
                     if (stdin_fd) |fd| std.posix.close(fd);
                     break :blk false;
@@ -293,37 +232,59 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: Exec
     }
 
     const term = parseStatus(status.?);
-    try sendExecResponse(allocator, virtio_fd, req.id, term.exit_code, term.signal);
+    const response = try protocol.encodeExecResponse(allocator, req.id, term.exit_code, term.signal);
+    defer allocator.free(response);
+    try writer.enqueue(response);
+    try flushWriter(virtio_fd, &writer);
 }
 
 fn handleStdin(
     allocator: std.mem.Allocator,
+    reader: *protocol.FrameReader,
     virtio_fd: std.posix.fd_t,
     stdin_fd: std.posix.fd_t,
     expected_id: u32,
 ) !bool {
-    const frame = readFrame(allocator, virtio_fd) catch |err| {
-        if (err == error.EndOfStream) {
+    while (true) {
+        const frame = reader.readFrame(virtio_fd) catch |err| {
+            if (err == error.EndOfStream) {
+                std.posix.close(stdin_fd);
+                return false;
+            }
+            return err;
+        };
+        if (frame == null) break;
+
+        const frame_buf = frame.?;
+        defer allocator.free(frame_buf);
+
+        const data = try protocol.decodeStdinData(allocator, frame_buf, expected_id);
+        if (data.data.len > 0) {
+            try protocol.writeAll(stdin_fd, data.data);
+        }
+        if (data.eof) {
             std.posix.close(stdin_fd);
             return false;
         }
-        return err;
-    };
-    defer allocator.free(frame);
-
-    var dec = cbor.Decoder.init(allocator, frame);
-    const root = try dec.decodeValue();
-    defer cbor.freeValue(allocator, root);
-
-    const data = try parseStdinData(root, expected_id);
-    if (data.data.len > 0) {
-        try writeAll(stdin_fd, data.data);
-    }
-    if (data.eof) {
-        std.posix.close(stdin_fd);
-        return false;
     }
     return true;
+}
+
+fn flushWriter(virtio_fd: std.posix.fd_t, writer: *protocol.FrameWriter) !void {
+    while (writer.hasPending()) {
+        var pollfds: [1]std.posix.pollfd = .{.{
+            .fd = virtio_fd,
+            .events = std.posix.POLL.OUT,
+            .revents = 0,
+        }};
+
+        _ = try std.posix.poll(pollfds[0..], 100);
+        const revents = pollfds[0].revents;
+        if ((revents & std.posix.POLL.OUT) != 0) {
+            try writer.flush(virtio_fd);
+        }
+        if ((revents & std.posix.POLL.HUP) != 0) return error.EndOfStream;
+    }
 }
 
 fn parseStatus(status: u32) Termination {
@@ -364,7 +325,7 @@ fn buildEnvp(
     defer env_map.deinit();
 
     for (env) |entry| {
-        const sep = std.mem.indexOfScalar(u8, entry, '=') orelse return ProtocolError.InvalidValue;
+        const sep = std.mem.indexOfScalar(u8, entry, '=') orelse return protocol.ProtocolError.InvalidValue;
         const key = entry[0..sep];
         const value = entry[sep + 1 ..];
         try env_map.put(key, value);
@@ -388,196 +349,4 @@ fn buildEnvp(
     }
 
     return envp_buf.ptr;
-}
-
-fn sendExecOutput(
-    allocator: std.mem.Allocator,
-    virtio_fd: std.posix.fd_t,
-    id: u32,
-    stream: []const u8,
-    data: []const u8,
-) !void {
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(allocator);
-
-    const w = buf.writer(allocator);
-    try cbor.writeMapStart(w, 4);
-    try cbor.writeText(w, "v");
-    try cbor.writeUInt(w, 1);
-    try cbor.writeText(w, "t");
-    try cbor.writeText(w, "exec_output");
-    try cbor.writeText(w, "id");
-    try cbor.writeUInt(w, id);
-    try cbor.writeText(w, "p");
-    try cbor.writeMapStart(w, 2);
-    try cbor.writeText(w, "stream");
-    try cbor.writeText(w, stream);
-    try cbor.writeText(w, "data");
-    try cbor.writeBytes(w, data);
-
-    try writeFrame(virtio_fd, buf.items);
-}
-
-fn sendExecResponse(
-    allocator: std.mem.Allocator,
-    virtio_fd: std.posix.fd_t,
-    id: u32,
-    exit_code: i32,
-    signal: ?i32,
-) !void {
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(allocator);
-
-    const w = buf.writer(allocator);
-    const map_len: usize = if (signal == null) 1 else 2;
-
-    try cbor.writeMapStart(w, 4);
-    try cbor.writeText(w, "v");
-    try cbor.writeUInt(w, 1);
-    try cbor.writeText(w, "t");
-    try cbor.writeText(w, "exec_response");
-    try cbor.writeText(w, "id");
-    try cbor.writeUInt(w, id);
-    try cbor.writeText(w, "p");
-    try cbor.writeMapStart(w, map_len);
-    try cbor.writeText(w, "exit_code");
-    try cbor.writeInt(w, exit_code);
-    if (signal) |sig| {
-        try cbor.writeText(w, "signal");
-        try cbor.writeInt(w, sig);
-    }
-
-    try writeFrame(virtio_fd, buf.items);
-}
-
-fn sendError(
-    allocator: std.mem.Allocator,
-    virtio_fd: std.posix.fd_t,
-    id: u32,
-    code: []const u8,
-    message: []const u8,
-) !void {
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(allocator);
-
-    const w = buf.writer(allocator);
-    try cbor.writeMapStart(w, 4);
-    try cbor.writeText(w, "v");
-    try cbor.writeUInt(w, 1);
-    try cbor.writeText(w, "t");
-    try cbor.writeText(w, "error");
-    try cbor.writeText(w, "id");
-    try cbor.writeUInt(w, id);
-    try cbor.writeText(w, "p");
-    try cbor.writeMapStart(w, 2);
-    try cbor.writeText(w, "code");
-    try cbor.writeText(w, code);
-    try cbor.writeText(w, "message");
-    try cbor.writeText(w, message);
-
-    try writeFrame(virtio_fd, buf.items);
-}
-
-fn readFrame(allocator: std.mem.Allocator, fd: std.posix.fd_t) ![]u8 {
-    var len_buf: [4]u8 = undefined;
-    try readExact(fd, len_buf[0..]);
-
-    const len = (@as(u32, len_buf[0]) << 24) |
-        (@as(u32, len_buf[1]) << 16) |
-        (@as(u32, len_buf[2]) << 8) |
-        @as(u32, len_buf[3]);
-
-    const max_frame: u32 = 4 * 1024 * 1024;
-    if (len > max_frame) return error.FrameTooLarge;
-
-    const frame = try allocator.alloc(u8, len);
-    errdefer allocator.free(frame);
-    try readExact(fd, frame);
-    return frame;
-}
-
-fn readExact(fd: std.posix.fd_t, buf: []u8) !void {
-    var offset: usize = 0;
-    while (offset < buf.len) {
-        const n = try std.posix.read(fd, buf[offset..]);
-        if (n == 0) return error.EndOfStream;
-        offset += n;
-    }
-}
-
-fn writeAll(fd: std.posix.fd_t, data: []const u8) !void {
-    var offset: usize = 0;
-    while (offset < data.len) {
-        const n = try std.posix.write(fd, data[offset..]);
-        if (n == 0) return error.EndOfStream;
-        offset += n;
-    }
-}
-
-fn writeFrame(fd: std.posix.fd_t, payload: []const u8) !void {
-    const len: u32 = @intCast(payload.len);
-    var len_buf: [4]u8 = .{
-        @intCast((len >> 24) & 0xff),
-        @intCast((len >> 16) & 0xff),
-        @intCast((len >> 8) & 0xff),
-        @intCast(len & 0xff),
-    };
-
-    try writeAll(fd, &len_buf);
-    try writeAll(fd, payload);
-}
-
-fn parseTextArray(allocator: std.mem.Allocator, value: ?cbor.Value) ![]const []const u8 {
-    if (value == null) return allocator.alloc([]const u8, 0);
-    const items = try expectArray(value.?);
-    var out = try allocator.alloc([]const u8, items.len);
-    for (items, 0..) |item, idx| {
-        out[idx] = try expectText(item);
-    }
-    return out;
-}
-
-fn expectMap(value: cbor.Value) ![]cbor.Entry {
-    return switch (value) {
-        .Map => |map| map,
-        else => ProtocolError.InvalidType,
-    };
-}
-
-fn expectArray(value: cbor.Value) ![]cbor.Value {
-    return switch (value) {
-        .Array => |items| items,
-        else => ProtocolError.InvalidType,
-    };
-}
-
-fn expectText(value: cbor.Value) ![]const u8 {
-    return switch (value) {
-        .Text => |text| text,
-        else => ProtocolError.InvalidType,
-    };
-}
-
-fn expectBytes(value: cbor.Value) ![]const u8 {
-    return switch (value) {
-        .Bytes => |bytes| bytes,
-        else => ProtocolError.InvalidType,
-    };
-}
-
-fn expectBool(value: cbor.Value) !bool {
-    return switch (value) {
-        .Bool => |b| b,
-        else => ProtocolError.InvalidType,
-    };
-}
-
-fn expectU32(value: cbor.Value) !u32 {
-    return switch (value) {
-        .Int => |num| {
-            if (num < 0 or num > std.math.maxInt(u32)) return ProtocolError.InvalidValue;
-            return @as(u32, @intCast(num));
-        },
-        else => ProtocolError.InvalidType,
-    };
 }
