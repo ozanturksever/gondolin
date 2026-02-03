@@ -7,7 +7,8 @@
     "start": "node dist/exec.js",
     "dev": "tsx src/exec.ts",
     "dev:ws": "tsx src/ws-server.ts",
-    "test:ws": "tsx src/ws-test.ts"
+    "test:ws": "tsx src/ws-test.ts",
+    "bash": "tsx src/bash.ts"
   },
   "dependencies": {
     "cbor": "^10.0.4",

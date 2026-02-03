@@ -638,6 +638,7 @@ function handleExec(
     env: message.env ?? [],
     cwd: message.cwd,
     stdin: message.stdin ?? false,
+    pty: message.pty ?? false,
   };
 
   if (!bridge.send(buildExecRequest(message.id, payload))) {

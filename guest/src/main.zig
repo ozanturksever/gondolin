@@ -1,5 +1,9 @@
 const std = @import("std");
 const protocol = @import("sandboxd").protocol;
+const c = @cImport({
+    @cInclude("pty.h");
+    @cInclude("unistd.h");
+});
 
 const log = std.log.scoped(.sandboxd);
 
@@ -141,68 +145,109 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: prot
     const argv = try buildArgv(arena_alloc, req.cmd, req.argv);
     const envp = try buildEnvp(arena_alloc, allocator, req.env);
 
-    const stdout_pipe = try std.posix.pipe2(.{ .CLOEXEC = true });
-    errdefer {
-        std.posix.close(stdout_pipe[0]);
-        std.posix.close(stdout_pipe[1]);
-    }
+    const use_pty = req.pty;
+    const wants_stdin = req.stdin or use_pty;
 
-    const stderr_pipe = try std.posix.pipe2(.{ .CLOEXEC = true });
-    errdefer {
-        std.posix.close(stderr_pipe[0]);
-        std.posix.close(stderr_pipe[1]);
-    }
-
-    var stdin_pipe: ?[2]std.posix.fd_t = null;
-    if (req.stdin) {
-        stdin_pipe = try std.posix.pipe2(.{ .CLOEXEC = true });
-        errdefer {
-            std.posix.close(stdin_pipe.?[0]);
-            std.posix.close(stdin_pipe.?[1]);
-        }
-    }
-
-    const pid = try std.posix.fork();
-    if (pid == 0) {
-        if (req.stdin) {
-            try std.posix.dup2(stdin_pipe.?[0], std.posix.STDIN_FILENO);
-        } else {
-            const devnull = std.posix.openZ("/dev/null", .{ .ACCMODE = .RDONLY }, 0) catch std.posix.exit(127);
-            try std.posix.dup2(devnull, std.posix.STDIN_FILENO);
-            std.posix.close(devnull);
-        }
-
-        try std.posix.dup2(stdout_pipe[1], std.posix.STDOUT_FILENO);
-        try std.posix.dup2(stderr_pipe[1], std.posix.STDERR_FILENO);
-
-        std.posix.close(stdout_pipe[0]);
-        std.posix.close(stdout_pipe[1]);
-        std.posix.close(stderr_pipe[0]);
-        std.posix.close(stderr_pipe[1]);
-
-        if (req.stdin) {
-            std.posix.close(stdin_pipe.?[0]);
-            std.posix.close(stdin_pipe.?[1]);
-        }
-
-        if (req.cwd) |cwd| {
-            _ = std.posix.chdir(cwd) catch std.posix.exit(127);
-        }
-
-        std.posix.execvpeZ(argv[0].?, argv, envp) catch {
-            const msg = "exec failed\n";
-            _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
-            std.posix.exit(127);
-        };
-    }
-
-    std.posix.close(stdout_pipe[1]);
-    std.posix.close(stderr_pipe[1]);
-
+    var stdout_fd: ?std.posix.fd_t = null;
+    var stderr_fd: ?std.posix.fd_t = null;
     var stdin_fd: ?std.posix.fd_t = null;
-    if (req.stdin) {
-        std.posix.close(stdin_pipe.?[0]);
-        stdin_fd = stdin_pipe.?[1];
+    var pty_master: ?std.posix.fd_t = null;
+
+    var stdout_pipe: ?[2]std.posix.fd_t = null;
+    var stderr_pipe: ?[2]std.posix.fd_t = null;
+    var stdin_pipe: ?[2]std.posix.fd_t = null;
+
+    var pid: std.posix.pid_t = 0;
+
+    if (use_pty) {
+        var master: c_int = 0;
+        const forked = c.forkpty(&master, null, null, null);
+        if (forked < 0) {
+            return error.OpenPtyFailed;
+        }
+        pid = @intCast(forked);
+        if (pid == 0) {
+            if (req.cwd) |cwd| {
+                _ = std.posix.chdir(cwd) catch std.posix.exit(127);
+            }
+
+            std.posix.execvpeZ(argv[0].?, argv, envp) catch {
+                const msg = "exec failed\n";
+                _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
+                std.posix.exit(127);
+            };
+        }
+
+        pty_master = @intCast(master);
+        stdout_fd = pty_master;
+        stdin_fd = pty_master;
+        errdefer {
+            if (pty_master) |fd| std.posix.close(fd);
+        }
+    } else {
+        stdout_pipe = try std.posix.pipe2(.{ .CLOEXEC = true });
+        errdefer {
+            std.posix.close(stdout_pipe.?[0]);
+            std.posix.close(stdout_pipe.?[1]);
+        }
+
+        stderr_pipe = try std.posix.pipe2(.{ .CLOEXEC = true });
+        errdefer {
+            std.posix.close(stderr_pipe.?[0]);
+            std.posix.close(stderr_pipe.?[1]);
+        }
+
+        if (wants_stdin) {
+            stdin_pipe = try std.posix.pipe2(.{ .CLOEXEC = true });
+            errdefer {
+                std.posix.close(stdin_pipe.?[0]);
+                std.posix.close(stdin_pipe.?[1]);
+            }
+        }
+
+        stdout_fd = stdout_pipe.?[0];
+        stderr_fd = stderr_pipe.?[0];
+        if (wants_stdin) stdin_fd = stdin_pipe.?[1];
+
+        pid = try std.posix.fork();
+        if (pid == 0) {
+            if (wants_stdin) {
+                try std.posix.dup2(stdin_pipe.?[0], std.posix.STDIN_FILENO);
+            } else {
+                const devnull = std.posix.openZ("/dev/null", .{ .ACCMODE = .RDONLY }, 0) catch std.posix.exit(127);
+                try std.posix.dup2(devnull, std.posix.STDIN_FILENO);
+                std.posix.close(devnull);
+            }
+
+            try std.posix.dup2(stdout_pipe.?[1], std.posix.STDOUT_FILENO);
+            try std.posix.dup2(stderr_pipe.?[1], std.posix.STDERR_FILENO);
+
+            std.posix.close(stdout_pipe.?[0]);
+            std.posix.close(stdout_pipe.?[1]);
+            std.posix.close(stderr_pipe.?[0]);
+            std.posix.close(stderr_pipe.?[1]);
+
+            if (wants_stdin) {
+                std.posix.close(stdin_pipe.?[0]);
+                std.posix.close(stdin_pipe.?[1]);
+            }
+
+            if (req.cwd) |cwd| {
+                _ = std.posix.chdir(cwd) catch std.posix.exit(127);
+            }
+
+            std.posix.execvpeZ(argv[0].?, argv, envp) catch {
+                const msg = "exec failed\n";
+                _ = std.posix.write(std.posix.STDERR_FILENO, msg) catch {};
+                std.posix.exit(127);
+            };
+        }
+    }
+
+    if (!use_pty) {
+        std.posix.close(stdout_pipe.?[1]);
+        std.posix.close(stderr_pipe.?[1]);
+        if (wants_stdin) std.posix.close(stdin_pipe.?[0]);
     }
 
     const original_flags = try std.posix.fcntl(virtio_fd, std.posix.F.GETFL, 0);
@@ -217,9 +262,10 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: prot
     var stdin_reader = protocol.FrameReader.init(allocator);
     defer stdin_reader.deinit();
 
-    var stdout_open = true;
-    var stderr_open = true;
-    var stdin_open = req.stdin;
+    var stdout_open = stdout_fd != null;
+    var stderr_open = stderr_fd != null;
+    var stdin_open = wants_stdin and stdin_fd != null;
+    const close_stdin_on_eof = !use_pty;
 
     var status: ?u32 = null;
     var buffer: [8192]u8 = undefined;
@@ -239,12 +285,12 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: prot
 
         if (stdout_open and !backpressure) {
             stdout_index = nfds;
-            pollfds[nfds] = .{ .fd = stdout_pipe[0], .events = std.posix.POLL.IN, .revents = 0 };
+            pollfds[nfds] = .{ .fd = stdout_fd.?, .events = std.posix.POLL.IN, .revents = 0 };
             nfds += 1;
         }
         if (stderr_open and !backpressure) {
             stderr_index = nfds;
-            pollfds[nfds] = .{ .fd = stderr_pipe[0], .events = std.posix.POLL.IN, .revents = 0 };
+            pollfds[nfds] = .{ .fd = stderr_fd.?, .events = std.posix.POLL.IN, .revents = 0 };
             nfds += 1;
         }
 
@@ -269,10 +315,15 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: prot
         if (stdout_index) |sindex| {
             const revents = pollfds[sindex].revents;
             if ((revents & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0) {
-                const n = try std.posix.read(stdout_pipe[0], buffer[0..]);
+                const n = try std.posix.read(stdout_fd.?, buffer[0..]);
                 if (n == 0) {
                     stdout_open = false;
-                    std.posix.close(stdout_pipe[0]);
+                    if (stdout_fd) |fd| std.posix.close(fd);
+                    stdout_fd = null;
+                    if (use_pty and stdin_fd != null) {
+                        stdin_fd = null;
+                        stdin_open = false;
+                    }
                 } else {
                     const payload = try protocol.encodeExecOutput(allocator, req.id, "stdout", buffer[0..n]);
                     defer allocator.free(payload);
@@ -285,10 +336,11 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: prot
         if (stderr_index) |sindex| {
             const revents = pollfds[sindex].revents;
             if ((revents & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0) {
-                const n = try std.posix.read(stderr_pipe[0], buffer[0..]);
+                const n = try std.posix.read(stderr_fd.?, buffer[0..]);
                 if (n == 0) {
                     stderr_open = false;
-                    std.posix.close(stderr_pipe[0]);
+                    if (stderr_fd) |fd| std.posix.close(fd);
+                    stderr_fd = null;
                 } else {
                     const payload = try protocol.encodeExecOutput(allocator, req.id, "stderr", buffer[0..n]);
                     defer allocator.free(payload);
@@ -304,12 +356,15 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: prot
                 try writer.flush(virtio_fd);
             }
             if (stdin_open and (revents & (std.posix.POLL.IN | std.posix.POLL.HUP)) != 0) {
-                stdin_open = handleStdin(allocator, &stdin_reader, virtio_fd, stdin_fd.?, req.id) catch |err| blk: {
+                stdin_open = handleStdin(allocator, &stdin_reader, virtio_fd, stdin_fd.?, req.id, close_stdin_on_eof) catch |err| blk: {
                     log.err("stdin handling failed: {s}", .{@errorName(err)});
-                    if (stdin_fd) |fd| std.posix.close(fd);
+                    if (close_stdin_on_eof) {
+                        if (stdin_fd) |fd| std.posix.close(fd);
+                        stdin_fd = null;
+                    }
                     break :blk false;
                 };
-                if (!stdin_open) stdin_fd = null;
+                if (!stdin_open and close_stdin_on_eof) stdin_fd = null;
             }
         }
 
@@ -321,7 +376,9 @@ fn handleExec(allocator: std.mem.Allocator, virtio_fd: std.posix.fd_t, req: prot
         }
     }
 
-    if (stdin_fd) |fd| std.posix.close(fd);
+    if (!use_pty) {
+        if (stdin_fd) |fd| std.posix.close(fd);
+    }
 
     if (status == null) {
         status = std.posix.waitpid(pid, 0).status;
@@ -340,6 +397,7 @@ fn handleStdin(
     virtio_fd: std.posix.fd_t,
     stdin_fd: std.posix.fd_t,
     expected_id: u32,
+    close_on_eof: bool,
 ) !bool {
     while (true) {
         const frame = reader.readFrame(virtio_fd) catch |err| {
@@ -359,7 +417,12 @@ fn handleStdin(
             try protocol.writeAll(stdin_fd, data.data);
         }
         if (data.eof) {
-            std.posix.close(stdin_fd);
+            if (close_on_eof) {
+                std.posix.close(stdin_fd);
+            } else {
+                const eot: [1]u8 = .{4};
+                _ = protocol.writeAll(stdin_fd, &eot) catch {};
+            }
             return false;
         }
     }

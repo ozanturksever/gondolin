@@ -15,6 +15,7 @@ pub const ExecRequest = struct {
     env: []const []const u8,
     cwd: ?[]const u8,
     stdin: bool,
+    pty: bool,
 };
 
 pub const StdinData = struct {
@@ -339,6 +340,11 @@ fn parseExecRequest(allocator: std.mem.Allocator, root: cbor.Value) !ExecRequest
         stdin_flag = try expectBool(stdin_val);
     }
 
+    var pty_flag = false;
+    if (cbor.getMapValue(payload, "pty")) |pty_val| {
+        pty_flag = try expectBool(pty_val);
+    }
+
     return ExecRequest{
         .id = id,
         .cmd = cmd,
@@ -346,6 +352,7 @@ fn parseExecRequest(allocator: std.mem.Allocator, root: cbor.Value) !ExecRequest
         .env = env,
         .cwd = cwd,
         .stdin = stdin_flag,
+        .pty = pty_flag,
     };
 }
 

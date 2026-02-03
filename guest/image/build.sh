@@ -29,7 +29,7 @@ SANDBOXD_BIN=${SANDBOXD_BIN:-"${GUEST_DIR}/zig-out/bin/sandboxd"}
 
 ALPINE_TARBALL="alpine-minirootfs-${ALPINE_VERSION}-${ARCH}.tar.gz"
 ALPINE_URL=${ALPINE_URL:-"https://dl-cdn.alpinelinux.org/alpine/${ALPINE_BRANCH}/releases/${ARCH}/${ALPINE_TARBALL}"}
-EXTRA_PACKAGES=${EXTRA_PACKAGES:-python3 linux-virt rng-tools}
+EXTRA_PACKAGES=${EXTRA_PACKAGES:-python3 linux-virt rng-tools bash}
 
 require_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then

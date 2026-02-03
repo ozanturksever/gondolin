@@ -6,6 +6,7 @@ export type ExecCommandMessage = {
   env?: string[];
   cwd?: string;
   stdin?: boolean;
+  pty?: boolean;
 };
 
 export type StdinCommandMessage = {

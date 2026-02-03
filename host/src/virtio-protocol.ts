@@ -44,6 +44,7 @@ export type ExecRequest = {
     env?: string[];
     cwd?: string;
     stdin?: boolean;
+    pty?: boolean;
   };
 };
 
@@ -115,6 +116,7 @@ export function buildExecRequest(
   if (payload.env !== undefined) cleaned.env = payload.env;
   if (payload.cwd !== undefined) cleaned.cwd = payload.cwd;
   if (payload.stdin !== undefined) cleaned.stdin = payload.stdin;
+  if (payload.pty !== undefined) cleaned.pty = payload.pty;
 
   return {
     v: 1,
