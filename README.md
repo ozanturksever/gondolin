@@ -28,12 +28,17 @@ requests.
   - Supports stdin streaming and optional PTY allocation (see protocol fields).
 - **Guest image**
   - `guest/image/build.sh` assembles an Alpine minirootfs, installs extra packages, and produces `initramfs.cpio.gz`.
-  - `guest/image/init` mounts `/proc`, `/sys`, `/dev`, loads virtio modules, and launches `sandboxd` as PID 1.
+  - `guest/image/init` mounts `/proc`, `/sys`, `/dev`, loads virtio modules, brings up `eth0`, and runs DHCP.
   - `guest/image/out/` contains the generated initramfs and downloaded kernel artifacts.
 - **Host controller**
   - `host/src/ws-server.ts` starts QEMU, exposes a WebSocket API, and bridges exec messages to virtio.
   - Automatic restart logic and state notifications are implemented in `SandboxController`.
   - `host/src/exec.ts` can send direct exec requests over the virtio socket for quick testing.
+- **Host networking (new)**
+  - QEMU is launched with a virtio-net device backed by a host Unix socket.
+  - A TypeScript network stack (`host/src/network-stack.ts`) handles Ethernet/ARP/IPv4/TCP/UDP/DHCP.
+  - TCP/UDP traffic is NATed via Node sockets, and DNS works via UDP.
+  - `pnpm run test:ws` now checks HTTP + HTTPS requests against icanhazip.com.
 
 ## Useful entry points
 
@@ -43,4 +48,4 @@ requests.
 
 ## What’s next
 
-The next POC step is adding host-controlled networking with a transparent proxy (see `plans/POC_PLAN.md`, step 8). The host/guest plumbing for exec RPCs is already in place, so the focus shifts to routing guest egress through a host MITM proxy and injecting a trusted CA into the guest image.
+The next POC step is to add TLS MITM/re-encryption and a host-controlled firewall that only allows HTTP/HTTPS/WebSocket traffic. See `plans/POC_PLAN.md` and the TODOs for TLS MITM + network policy.
