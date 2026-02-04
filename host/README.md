@@ -127,6 +127,114 @@ The secret placeholders prevent the real credentials from ever being visible
 inside the guest. The host intercepts HTTP requests and replaces the
 placeholder with the actual secret only if the target host matches.
 
+## Exploration Bash
+
+The `gondolin bash` command provides a quick way to explore the sandbox with
+configurable filesystem mounts and network access. This is useful for testing,
+debugging, and interactive exploration.
+
+### Basic Usage
+
+```bash
+# Start a basic bash session with default memory-backed VFS
+pnpm run bash
+
+# Or via the CLI directly
+npx tsx bin/gondolin.ts bash
+```
+
+### Mounting Host Directories
+
+Mount host directories into the sandbox using `--mount-hostfs`:
+
+```bash
+# Mount a host directory read-write
+gondolin bash --mount-hostfs /home/user/project:/workspace
+
+# Mount read-only (append :ro)
+gondolin bash --mount-hostfs /data:/data:ro
+
+# Multiple mounts
+gondolin bash --mount-hostfs /src:/workspace --mount-hostfs /config:/etc/app:ro
+```
+
+The mount format follows Docker conventions: `HOST_PATH:GUEST_PATH[:ro]`
+
+### Memory-backed Mounts
+
+Create ephemeral memory-backed filesystems at specific paths using `--mount-memfs`:
+
+```bash
+# Create a memory-backed /tmp
+gondolin bash --mount-memfs /tmp
+
+# Combine with host mounts
+gondolin bash --mount-hostfs /data:/data:ro --mount-memfs /tmp --mount-memfs /scratch
+```
+
+### Network Access
+
+Control which hosts the sandbox can reach with `--allow-host`:
+
+```bash
+# Allow access to specific hosts
+gondolin bash --allow-host api.github.com --allow-host httpbin.org
+
+# Wildcards are supported
+gondolin bash --allow-host "*.example.com"
+```
+
+### Secret Injection
+
+Inject secrets that are only sent to specific hosts using `--host-secret`:
+
+```bash
+# Read secret from environment variable $GITHUB_TOKEN
+gondolin bash --allow-host api.github.com --host-secret GITHUB_TOKEN@api.github.com
+
+# Explicit secret value
+gondolin bash --host-secret API_KEY@api.example.com=sk-secret-key
+
+# Multiple hosts for one secret
+gondolin bash --host-secret TOKEN@api.example.com,staging.example.com
+```
+
+The secret format is: `NAME@HOST[,HOST...][=VALUE]`
+- If `=VALUE` is omitted, the value is read from the environment variable `$NAME`
+- The secret is injected into HTTP headers only when requests match the specified hosts
+- The actual secret value never enters the guest; only a placeholder is visible
+
+### Combined Example
+
+```bash
+# Full development setup:
+# - Mount project directory read-write
+# - Mount dependencies read-only  
+# - Ephemeral temp directory
+# - Allow GitHub API with token from environment
+gondolin bash \
+  --mount-hostfs ~/project:/workspace \
+  --mount-hostfs ~/.npm:/root/.npm:ro \
+  --mount-memfs /tmp \
+  --allow-host api.github.com \
+  --host-secret GITHUB_TOKEN@api.github.com
+```
+
+### Using with exec
+
+The same options work with `gondolin exec` for non-interactive commands:
+
+```bash
+# Run a command with mounted filesystem
+gondolin exec --mount-hostfs /src:/workspace -- ls -la /workspace
+
+# Build with network access
+gondolin exec \
+  --mount-hostfs ~/project:/workspace \
+  --allow-host registry.npmjs.org \
+  -- sh -c "cd /workspace && npm install"
+```
+
 ## Useful commands
 - `pnpm run dev:ws -- --net-debug` to start the WS server with network debug logging.
 - `GONDOLIN_DEBUG=net pnpm run dev:ws` to enable the same logging via env (comma separated).

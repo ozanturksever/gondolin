@@ -1,6 +1,11 @@
+import fs from "fs";
 import net from "net";
+import path from "path";
 
 import { VM } from "../src/vm";
+import type { VirtualProvider } from "../src/vfs";
+import { MemoryProvider, RealFSProvider, ReadonlyProvider } from "../src/vfs";
+import { createHttpHooks } from "../src/http-hooks";
 import {
   FrameReader,
   buildExecRequest,
@@ -21,19 +26,43 @@ type Command = {
   id: number;
 };
 
-type Args = {
+type ExecArgs = {
   sock?: string;
   commands: Command[];
+  common: CommonOptions;
 };
 
 function usage() {
   console.log("Usage: gondolin <command> [options]");
   console.log("Commands:");
-  console.log("  exec         Run a command via the virtio socket");
+  console.log("  exec         Run a command via the virtio socket or WS");
   console.log("  ws-server    Start the WebSocket bridge server");
   console.log("  bash         Start an interactive bash session over WS");
   console.log("  help         Show this help");
   console.log("\nRun gondolin <command> --help for command-specific flags.");
+}
+
+function bashUsage() {
+  console.log("Usage: gondolin bash [options]");
+  console.log();
+  console.log("Start an interactive bash session in the sandbox.");
+  console.log();
+  console.log("VFS Options:");
+  console.log("  --mount-hostfs HOST:GUEST[:ro]  Mount host directory at guest path");
+  console.log("                                  Append :ro for read-only mount");
+  console.log("  --mount-memfs PATH              Create memory-backed mount at path");
+  console.log();
+  console.log("Network Options:");
+  console.log("  --allow-host HOST               Allow HTTP requests to host (can repeat)");
+  console.log("  --host-secret NAME@HOST[,HOST...][=VALUE]");
+  console.log("                                  Add secret for specified hosts");
+  console.log("                                  If =VALUE is omitted, reads from $NAME");
+  console.log();
+  console.log("Examples:");
+  console.log("  gondolin bash --mount-hostfs /home/user/project:/workspace");
+  console.log("  gondolin bash --mount-hostfs /data:/data:ro --mount-memfs /tmp");
+  console.log("  gondolin bash --allow-host api.github.com");
+  console.log("  gondolin bash --host-secret GITHUB_TOKEN@api.github.com");
 }
 
 function execUsage() {
@@ -42,12 +71,183 @@ function execUsage() {
   console.log(
     "  gondolin exec --sock PATH --cmd CMD [--arg ARG] [--env KEY=VALUE] [--cwd PATH] [--cmd CMD ...]"
   );
+  console.log("  gondolin exec [options] -- CMD [ARGS...]  (WS mode, no --sock)");
+  console.log();
   console.log("Use -- to pass a command and its arguments directly.");
   console.log("Arguments apply to the most recent --cmd.");
+  console.log();
+  console.log("VFS Options (WS mode only):");
+  console.log("  --mount-hostfs HOST:GUEST[:ro]  Mount host directory at guest path");
+  console.log("  --mount-memfs PATH              Create memory-backed mount at path");
+  console.log();
+  console.log("Network Options (WS mode only):");
+  console.log("  --allow-host HOST               Allow HTTP requests to host");
+  console.log("  --host-secret NAME@HOST[,HOST...][=VALUE]");
+  console.log("                                  Add secret for specified hosts");
 }
 
-function parseExecArgs(argv: string[]): Args {
-  const args: Args = { commands: [] };
+type MountSpec = {
+  hostPath: string;
+  guestPath: string;
+  readonly: boolean;
+};
+
+type SecretSpec = {
+  name: string;
+  value: string;
+  hosts: string[];
+};
+
+type CommonOptions = {
+  mounts: MountSpec[];
+  memoryMounts: string[];
+  allowedHosts: string[];
+  secrets: SecretSpec[];
+};
+
+function parseMount(spec: string): MountSpec {
+  const parts = spec.split(":");
+  if (parts.length < 2) {
+    throw new Error(`Invalid mount format: ${spec} (expected HOST:GUEST[:ro])`);
+  }
+
+  // Handle Windows paths like C:\path by checking if the second part looks like a path
+  let hostPath: string;
+  let rest: string[];
+
+  // Check if this looks like a Windows drive letter (single letter followed by nothing before the colon)
+  if (parts[0].length === 1 && /^[a-zA-Z]$/.test(parts[0]) && parts.length >= 3) {
+    hostPath = `${parts[0]}:${parts[1]}`;
+    rest = parts.slice(2);
+  } else {
+    hostPath = parts[0];
+    rest = parts.slice(1);
+  }
+
+  if (rest.length === 0) {
+    throw new Error(`Invalid mount format: ${spec} (missing guest path)`);
+  }
+
+  // Similar check for guest path (though unlikely to be Windows in a VM)
+  let guestPath: string;
+  let options: string[];
+
+  if (rest[0].length === 1 && /^[a-zA-Z]$/.test(rest[0]) && rest.length >= 2) {
+    guestPath = `${rest[0]}:${rest[1]}`;
+    options = rest.slice(2);
+  } else {
+    guestPath = rest[0];
+    options = rest.slice(1);
+  }
+
+  const readonly = options.includes("ro");
+
+  return { hostPath, guestPath, readonly };
+}
+
+function parseHostSecret(spec: string): SecretSpec {
+  // Format: NAME@HOST[,HOST...][=VALUE]
+  const atIndex = spec.indexOf("@");
+  if (atIndex === -1) {
+    throw new Error(
+      `Invalid host-secret format: ${spec} (expected NAME@HOST[,HOST...][=VALUE])`
+    );
+  }
+
+  const name = spec.slice(0, atIndex);
+  if (!name) {
+    throw new Error(`Invalid host-secret format: ${spec} (empty name)`);
+  }
+
+  const afterAt = spec.slice(atIndex + 1);
+  const eqIndex = afterAt.indexOf("=");
+
+  let hostsStr: string;
+  let value: string;
+
+  if (eqIndex === -1) {
+    // No explicit value, read from environment
+    hostsStr = afterAt;
+    const envValue = process.env[name];
+    if (envValue === undefined) {
+      throw new Error(`Environment variable ${name} not set for host-secret`);
+    }
+    value = envValue;
+  } else {
+    hostsStr = afterAt.slice(0, eqIndex);
+    value = afterAt.slice(eqIndex + 1);
+  }
+
+  const hosts = hostsStr.split(",").filter(Boolean);
+  if (hosts.length === 0) {
+    throw new Error(`Invalid host-secret format: ${spec} (no hosts specified)`);
+  }
+
+  return { name, value, hosts };
+}
+
+function buildVmOptions(common: CommonOptions) {
+  const mounts: Record<string, VirtualProvider> = {};
+
+  // Add host filesystem mounts
+  for (const mount of common.mounts) {
+    // Resolve and validate host path
+    const resolvedHostPath = path.resolve(mount.hostPath);
+    if (!fs.existsSync(resolvedHostPath)) {
+      throw new Error(`Host path does not exist: ${mount.hostPath}`);
+    }
+    const stat = fs.statSync(resolvedHostPath);
+    if (!stat.isDirectory()) {
+      throw new Error(`Host path is not a directory: ${mount.hostPath}`);
+    }
+
+    let provider: VirtualProvider = new RealFSProvider(resolvedHostPath);
+    if (mount.readonly) {
+      provider = new ReadonlyProvider(provider);
+    }
+    mounts[mount.guestPath] = provider;
+  }
+
+  // Add memory mounts
+  for (const path of common.memoryMounts) {
+    mounts[path] = new MemoryProvider();
+  }
+
+  // Build HTTP hooks if we have network options
+  let httpHooks;
+  let env: Record<string, string> | undefined;
+
+  if (common.allowedHosts.length > 0 || common.secrets.length > 0) {
+    const secrets: Record<string, { hosts: string[]; value: string }> = {};
+    for (const secret of common.secrets) {
+      secrets[secret.name] = { hosts: secret.hosts, value: secret.value };
+    }
+
+    const result = createHttpHooks({
+      allowedHosts: common.allowedHosts,
+      secrets,
+    });
+    httpHooks = result.httpHooks;
+    env = result.env;
+  }
+
+  return {
+    vfs: Object.keys(mounts).length > 0 ? { mounts } : undefined,
+    httpHooks,
+    env,
+  };
+}
+
+function parseExecArgs(argv: string[]): ExecArgs {
+  const args: ExecArgs = {
+    commands: [],
+    common: {
+      mounts: [],
+      memoryMounts: [],
+      allowedHosts: [],
+      secrets: [],
+    },
+  };
   let current: Command | null = null;
   let nextId = 1;
 
@@ -62,6 +262,37 @@ function parseExecArgs(argv: string[]): Args {
     if (!Number.isFinite(id)) fail("--id must be a number");
     if (id >= nextId) nextId = id + 1;
     return id;
+  };
+
+  const parseCommonOption = (optionArgs: string[], i: number): number => {
+    const arg = optionArgs[i];
+    switch (arg) {
+      case "--mount-hostfs": {
+        const spec = optionArgs[++i];
+        if (!spec) fail("--mount-hostfs requires an argument");
+        args.common.mounts.push(parseMount(spec));
+        return i;
+      }
+      case "--mount-memfs": {
+        const path = optionArgs[++i];
+        if (!path) fail("--mount-memfs requires a path argument");
+        args.common.memoryMounts.push(path);
+        return i;
+      }
+      case "--allow-host": {
+        const host = optionArgs[++i];
+        if (!host) fail("--allow-host requires a host argument");
+        args.common.allowedHosts.push(host);
+        return i;
+      }
+      case "--host-secret": {
+        const spec = optionArgs[++i];
+        if (!spec) fail("--host-secret requires an argument");
+        args.common.secrets.push(parseHostSecret(spec));
+        return i;
+      }
+    }
+    return -1; // Not a common option
   };
 
   const separatorIndex = argv.indexOf("--");
@@ -80,6 +311,14 @@ function parseExecArgs(argv: string[]): Args {
 
     for (let i = 0; i < optionArgs.length; i += 1) {
       const arg = optionArgs[i];
+      
+      // Try parsing as common option first
+      const newIndex = parseCommonOption(optionArgs, i);
+      if (newIndex >= 0) {
+        i = newIndex;
+        continue;
+      }
+
       switch (arg) {
         case "--sock":
           args.sock = optionArgs[++i];
@@ -112,6 +351,14 @@ function parseExecArgs(argv: string[]): Args {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
+    
+    // Try parsing as common option first
+    const newIndex = parseCommonOption(argv, i);
+    if (newIndex >= 0) {
+      i = newIndex;
+      continue;
+    }
+
     switch (arg) {
       case "--sock":
         args.sock = argv[++i];
@@ -163,14 +410,48 @@ function buildCommandPayload(command: Command) {
   return payload;
 }
 
-function runExec(argv: string[] = process.argv.slice(2)) {
-  const args = parseExecArgs(argv);
-  if (!args.sock || args.commands.length === 0) {
-    execUsage();
+async function runExecWs(args: ExecArgs) {
+  const vmOptions = buildVmOptions(args.common);
+
+  const vm = new VM({
+    url: WS_URL ?? undefined,
+    token: TOKEN ?? undefined,
+    ...vmOptions,
+  });
+
+  let exitCode = 0;
+
+  try {
+    for (const command of args.commands) {
+      const result = await vm.exec([command.cmd, ...command.argv], {
+        env: command.env.length > 0 ? command.env : undefined,
+        cwd: command.cwd,
+      });
+
+      process.stdout.write(result.stdout);
+      process.stderr.write(result.stderr);
+
+      if (result.signal !== undefined) {
+        process.stderr.write(`process exited due to signal ${result.signal}\n`);
+      }
+
+      if (result.exitCode !== 0 && exitCode === 0) {
+        exitCode = result.exitCode;
+      }
+    }
+
+    await vm.stop();
+    process.exit(exitCode);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`${message}\n`);
+    await vm.stop();
     process.exit(1);
   }
+}
 
-  const socket = net.createConnection({ path: args.sock });
+function runExecSocket(args: ExecArgs) {
+  const socket = net.createConnection({ path: args.sock! });
   const reader = new FrameReader();
   let currentIndex = 0;
   let inflightId: number | null = null;
@@ -246,8 +527,95 @@ function runExec(argv: string[] = process.argv.slice(2)) {
   });
 }
 
-async function runBash() {
-  const vm = new VM({ url: WS_URL ?? undefined, token: TOKEN ?? undefined });
+async function runExec(argv: string[] = process.argv.slice(2)) {
+  const args = parseExecArgs(argv);
+
+  if (args.commands.length === 0) {
+    execUsage();
+    process.exit(1);
+  }
+
+  if (args.sock) {
+    // Socket mode (direct virtio connection)
+    runExecSocket(args);
+  } else {
+    // WS mode (via sandbox server)
+    await runExecWs(args);
+  }
+}
+
+type BashArgs = CommonOptions;
+
+function parseBashArgs(argv: string[]): BashArgs {
+  const args: BashArgs = {
+    mounts: [],
+    memoryMounts: [],
+    allowedHosts: [],
+    secrets: [],
+  };
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    switch (arg) {
+      case "--mount-hostfs": {
+        const spec = argv[++i];
+        if (!spec) {
+          console.error("--mount-hostfs requires an argument");
+          process.exit(1);
+        }
+        args.mounts.push(parseMount(spec));
+        break;
+      }
+      case "--mount-memfs": {
+        const path = argv[++i];
+        if (!path) {
+          console.error("--mount-memfs requires a path argument");
+          process.exit(1);
+        }
+        args.memoryMounts.push(path);
+        break;
+      }
+      case "--allow-host": {
+        const host = argv[++i];
+        if (!host) {
+          console.error("--allow-host requires a host argument");
+          process.exit(1);
+        }
+        args.allowedHosts.push(host);
+        break;
+      }
+      case "--host-secret": {
+        const spec = argv[++i];
+        if (!spec) {
+          console.error("--host-secret requires an argument");
+          process.exit(1);
+        }
+        args.secrets.push(parseHostSecret(spec));
+        break;
+      }
+      case "--help":
+      case "-h":
+        bashUsage();
+        process.exit(0);
+      default:
+        console.error(`Unknown argument: ${arg}`);
+        bashUsage();
+        process.exit(1);
+    }
+  }
+
+  return args;
+}
+
+async function runBash(argv: string[]) {
+  const args = parseBashArgs(argv);
+  const vmOptions = buildVmOptions(args);
+
+  const vm = new VM({
+    url: WS_URL ?? undefined,
+    token: TOKEN ?? undefined,
+    ...vmOptions,
+  });
 
   try {
     // shell() automatically attaches to stdin/stdout/stderr in TTY mode
@@ -277,14 +645,14 @@ async function main() {
 
   switch (command) {
     case "exec":
-      runExec(args);
+      await runExec(args);
       return;
     case "ws-server":
     case "server":
       await runWsServer(args);
       return;
     case "bash":
-      await runBash();
+      await runBash(args);
       return;
     default:
       console.error(`Unknown command: ${command}`);

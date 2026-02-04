@@ -3,7 +3,7 @@ import os from "node:os";
 import test from "node:test";
 
 import { VM } from "../src/vm";
-import { MemoryProvider } from "../src/vfs";
+import { MemoryProvider, ReadonlyProvider } from "../src/vfs";
 import { createErrnoError } from "../src/vfs/errors";
 
 const url = process.env.WS_URL;
@@ -186,4 +186,147 @@ test("vfs supports read-only email mounts with dynamic content", { timeout: time
   }
 
   assert.ok(apiCalls.includes(emailId));
+});
+
+test("ReadonlyProvider blocks write operations", { timeout: timeoutMs, skip: Boolean(url) }, async () => {
+  // Create a memory provider with some initial content
+  const innerProvider = new MemoryProvider();
+  const handle = await innerProvider.open("/existing.txt", "w+");
+  await handle.writeFile("initial content");
+  await handle.close();
+  await innerProvider.mkdir("/subdir");
+
+  // Wrap it with ReadonlyProvider
+  const provider = new ReadonlyProvider(innerProvider);
+
+  // Verify readonly property
+  assert.equal(provider.readonly, true);
+
+  // Read operations should work
+  const readHandle = await provider.open("/existing.txt", "r");
+  const content = await readHandle.readFile({ encoding: "utf-8" });
+  await readHandle.close();
+  assert.equal(content, "initial content");
+
+  // stat should work
+  const stats = await provider.stat("/existing.txt");
+  assert.ok(stats.isFile());
+
+  // readdir should work
+  const entries = await provider.readdir("/");
+  assert.ok(entries.includes("existing.txt") || entries.some((e: string | { name: string }) => typeof e === "object" && e.name === "existing.txt"));
+
+  // Write operations should be blocked (EROFS = errno 30)
+  const isEROFS = (err: unknown) => {
+    const e = err as NodeJS.ErrnoException;
+    return e.code === "EROFS" || e.code === "ERRNO_30" || e.errno === ERRNO.EROFS;
+  };
+
+  await assert.rejects(
+    () => provider.open("/new.txt", "w"),
+    isEROFS
+  );
+
+  await assert.rejects(
+    () => provider.open("/existing.txt", "w"),
+    isEROFS
+  );
+
+  await assert.rejects(
+    () => provider.open("/existing.txt", "a"),
+    isEROFS
+  );
+
+  await assert.rejects(
+    () => provider.open("/existing.txt", "r+"),
+    isEROFS
+  );
+
+  await assert.rejects(
+    () => provider.mkdir("/newdir"),
+    isEROFS
+  );
+
+  await assert.rejects(
+    () => provider.unlink("/existing.txt"),
+    isEROFS
+  );
+
+  await assert.rejects(
+    () => provider.rmdir("/subdir"),
+    isEROFS
+  );
+
+  await assert.rejects(
+    () => provider.rename("/existing.txt", "/renamed.txt"),
+    isEROFS
+  );
+});
+
+test("ReadonlyProvider works in VM guest", { timeout: timeoutMs, skip: Boolean(url) }, async () => {
+  // Create a provider with initial content
+  const innerProvider = new MemoryProvider();
+  const handle = await innerProvider.open("/host-file.txt", "w+");
+  await handle.writeFile("read-only data from host");
+  await handle.close();
+
+  // Wrap with ReadonlyProvider
+  const roProvider = new ReadonlyProvider(innerProvider);
+
+  // Also have a writable area
+  const rwProvider = new MemoryProvider();
+
+  const vm = new VM({
+    server: { console: "none" },
+    vfs: {
+      mounts: {
+        "/ro": roProvider,
+        "/rw": rwProvider,
+      },
+    },
+  });
+
+  try {
+    await vm.waitForReady();
+
+    // Reading from read-only mount should work
+    const readResult = await withTimeout(
+      vm.exec(["sh", "-c", "cat /ro/host-file.txt"]),
+      timeoutMs
+    );
+    if (readResult.exitCode !== 0) {
+      throw new Error(`cat failed (exit ${readResult.exitCode}): ${readResult.stderr.trim()}`);
+    }
+    assert.equal(readResult.stdout.trim(), "read-only data from host");
+
+    // Writing to read-only mount should fail
+    const writeRoResult = await withTimeout(
+      vm.exec(["sh", "-c", "echo 'nope' > /ro/new-file.txt 2>&1; echo exit=$?"]),
+      timeoutMs
+    );
+    // The exit code should be non-zero or the output should indicate failure
+    assert.ok(
+      writeRoResult.stdout.includes("Read-only") ||
+      writeRoResult.stdout.includes("exit=1") ||
+      writeRoResult.exitCode !== 0
+    );
+
+    // Writing to writable mount should work
+    const writeRwResult = await withTimeout(
+      vm.exec(["sh", "-c", "echo 'writable' > /rw/new-file.txt"]),
+      timeoutMs
+    );
+    if (writeRwResult.exitCode !== 0) {
+      throw new Error(`write failed (exit ${writeRwResult.exitCode}): ${writeRwResult.stderr.trim()}`);
+    }
+
+    // Verify written content
+    const verifyResult = await withTimeout(
+      vm.exec(["sh", "-c", "cat /rw/new-file.txt"]),
+      timeoutMs
+    );
+    assert.equal(verifyResult.stdout.trim(), "writable");
+  } finally {
+    await vm.stop();
+  }
 });
