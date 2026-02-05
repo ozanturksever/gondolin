@@ -182,8 +182,26 @@ export function getDefaultArch(): Architecture {
 /**
  * Validate a build configuration.
  */
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((entry) => typeof entry === "string");
+
+const isOptionalString = (value: unknown): boolean =>
+  value === undefined || typeof value === "string";
+
+const isOptionalBoolean = (value: unknown): boolean =>
+  value === undefined || typeof value === "boolean";
+
+const isOptionalNumber = (value: unknown): boolean =>
+  value === undefined || (typeof value === "number" && Number.isFinite(value));
+
+const isOptionalStringArray = (value: unknown): boolean =>
+  value === undefined || isStringArray(value);
+
 export function validateBuildConfig(config: unknown): config is BuildConfig {
-  if (typeof config !== "object" || config === null) {
+  if (!isRecord(config)) {
     return false;
   }
 
@@ -198,14 +216,87 @@ export function validateBuildConfig(config: unknown): config is BuildConfig {
     return false;
   }
 
+  // Optional top-level fields
+  if (cfg.container !== undefined) {
+    if (!isRecord(cfg.container)) {
+      return false;
+    }
+    const container = cfg.container as Record<string, unknown>;
+    if (!isOptionalBoolean(container.force)) {
+      return false;
+    }
+    if (!isOptionalString(container.image)) {
+      return false;
+    }
+    if (
+      container.runtime !== undefined &&
+      container.runtime !== "docker" &&
+      container.runtime !== "podman"
+    ) {
+      return false;
+    }
+  }
+
+  if (cfg.rootfs !== undefined) {
+    if (!isRecord(cfg.rootfs)) {
+      return false;
+    }
+    const rootfs = cfg.rootfs as Record<string, unknown>;
+    if (!isOptionalString(rootfs.label)) {
+      return false;
+    }
+    if (!isOptionalNumber(rootfs.sizeMb)) {
+      return false;
+    }
+  }
+
+  if (cfg.init !== undefined) {
+    if (!isRecord(cfg.init)) {
+      return false;
+    }
+    const init = cfg.init as Record<string, unknown>;
+    if (!isOptionalString(init.rootfsInit)) {
+      return false;
+    }
+    if (!isOptionalString(init.initramfsInit)) {
+      return false;
+    }
+  }
+
+  if (!isOptionalString(cfg.sandboxdPath)) {
+    return false;
+  }
+
+  if (!isOptionalString(cfg.sandboxfsPath)) {
+    return false;
+  }
+
   // Distro-specific validation
   if (cfg.distro === "alpine") {
     if (cfg.alpine !== undefined) {
-      if (typeof cfg.alpine !== "object" || cfg.alpine === null) {
+      if (!isRecord(cfg.alpine)) {
         return false;
       }
       const alpine = cfg.alpine as Record<string, unknown>;
       if (typeof alpine.version !== "string") {
+        return false;
+      }
+      if (!isOptionalString(alpine.branch)) {
+        return false;
+      }
+      if (!isOptionalString(alpine.mirror)) {
+        return false;
+      }
+      if (!isOptionalString(alpine.kernelPackage)) {
+        return false;
+      }
+      if (!isOptionalString(alpine.kernelImage)) {
+        return false;
+      }
+      if (!isOptionalStringArray(alpine.rootfsPackages)) {
+        return false;
+      }
+      if (!isOptionalStringArray(alpine.initramfsPackages)) {
         return false;
       }
     }
@@ -215,11 +306,17 @@ export function validateBuildConfig(config: unknown): config is BuildConfig {
     if (cfg.nixos === undefined) {
       return false;
     }
-    if (typeof cfg.nixos !== "object" || cfg.nixos === null) {
+    if (!isRecord(cfg.nixos)) {
       return false;
     }
     const nixos = cfg.nixos as Record<string, unknown>;
     if (typeof nixos.channel !== "string") {
+      return false;
+    }
+    if (!isOptionalString(nixos.systemExpression)) {
+      return false;
+    }
+    if (!isOptionalStringArray(nixos.packages)) {
       return false;
     }
   }

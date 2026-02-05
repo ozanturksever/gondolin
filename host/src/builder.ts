@@ -110,14 +110,12 @@ export async function buildAssets(
 
   // Resolve paths
   const outputDir = path.resolve(options.outputDir);
-  const workDir = options.workDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "gondolin-build-"));
 
   // Ensure output directory exists
   fs.mkdirSync(outputDir, { recursive: true });
 
   log(`Building guest assets for ${config.arch} (${config.distro})`);
   log(`Output directory: ${outputDir}`);
-  log(`Work directory: ${workDir}`);
 
   // Check if we need a container (macOS can't run Linux build tools natively)
   const needsContainer = shouldUseContainer(config);
@@ -125,6 +123,10 @@ export async function buildAssets(
   if (needsContainer) {
     return buildInContainer(config, options, log);
   }
+
+  const workDir =
+    options.workDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "gondolin-build-"));
+  log(`Work directory: ${workDir}`);
 
   // Native Linux build
   return buildNative(config, options, workDir, log);
@@ -740,8 +742,18 @@ async function runCommand(
  */
 function computeFileHash(filePath: string): string {
   const hash = createHash("sha256");
-  const data = fs.readFileSync(filePath);
-  hash.update(data);
+  const fd = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+
+  try {
+    let bytesRead = 0;
+    while ((bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+
   return hash.digest("hex");
 }
 
