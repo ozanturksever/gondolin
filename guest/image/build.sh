@@ -102,6 +102,7 @@ import re
 import sys
 import tarfile
 import subprocess
+import shutil
 
 rootfs_dir = os.environ["ROOTFS_DIR"]
 cache_dir = os.environ["CACHE_DIR"]
@@ -178,6 +179,24 @@ def resolve_pkg(dep: str):
     return provides.get(dep)
 
 
+def has_symlink_component(path: str, root: str) -> bool:
+    root = os.path.abspath(root)
+    path = os.path.abspath(path)
+    if path == root:
+        return False
+    if not path.startswith(root + os.sep):
+        return True
+    rel = os.path.relpath(path, root)
+    if rel == ".":
+        return False
+    current = root
+    for part in rel.split(os.sep):
+        current = os.path.join(current, part)
+        if os.path.islink(current):
+            return True
+    return False
+
+
 needed = []
 seen = set()
 queue = list(packages)
@@ -208,7 +227,39 @@ for pkg_name in needed:
         url = f"{repo}/{arch}/{apk_name}"
         download(url, apk_path)
     with tarfile.open(apk_path, "r:gz") as tar:
-        tar.extractall(rootfs_dir, filter="fully_trusted")
+        members = tar.getmembers()
+        safe_members = []
+        for member in members:
+            target = os.path.join(rootfs_dir, member.name)
+            if has_symlink_component(target, rootfs_dir):
+                print(f"skipping symlinked path {member.name}", file=sys.stderr)
+                continue
+            if os.path.exists(target) or os.path.islink(target):
+                try:
+                    if os.path.isdir(target) and not member.isdir():
+                        shutil.rmtree(target)
+                    elif os.path.isdir(target) and member.isdir():
+                        safe_members.append(member)
+                        continue
+                    else:
+                        os.remove(target)
+                except PermissionError:
+                    try:
+                        os.chmod(target, 0o700)
+                    except OSError:
+                        pass
+                    if os.path.isdir(target) and not member.isdir():
+                        shutil.rmtree(target, ignore_errors=True)
+                    elif os.path.isdir(target):
+                        safe_members.append(member)
+                        continue
+                    else:
+                        try:
+                            os.remove(target)
+                        except IsADirectoryError:
+                            shutil.rmtree(target, ignore_errors=True)
+            safe_members.append(member)
+        tar.extractall(rootfs_dir, members=safe_members, filter="fully_trusted")
 PY
 }
 

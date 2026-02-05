@@ -281,7 +281,7 @@ GONDOLIN_GUEST_DIR=./my-assets gondolin bash
 ### Build Requirements
 
 Building custom images requires:
-- **Zig** compiler (for cross-compiling sandboxd/sandboxfs)
+- **Zig 0.15.2** compiler (for cross-compiling sandboxd/sandboxfs)
 - **lz4** for initramfs compression
 - **curl** for downloading Alpine packages
 - **python3** for package dependency resolution
@@ -289,12 +289,13 @@ Building custom images requires:
 
 On macOS:
 ```bash
-brew install zig lz4 e2fsprogs
+brew install zig@0.15 lz4 e2fsprogs
 ```
 
 On Linux:
 ```bash
-sudo apt install zig lz4 curl python3 e2fsprogs
+# Install Zig 0.15.2 from https://ziglang.org/download/
+sudo apt install lz4 curl python3 e2fsprogs
 ```
 
 ### Architecture Cross-Compilation

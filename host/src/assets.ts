@@ -234,15 +234,21 @@ async function downloadAndExtract(assetDir: string): Promise<void> {
  * and downloads them from GitHub releases if they're not present locally.
  *
  * Asset location priority:
- * 1. GONDOLIN_GUEST_DIR environment variable
+ * 1. GONDOLIN_GUEST_DIR environment variable (explicit override, no download)
  * 2. Local development checkout (../guest/image/out)
  * 3. User cache (~/.cache/gondolin/<version>)
  *
  * @returns Paths to the guest assets
  * @throws If download fails or assets cannot be verified
+ * @throws If GONDOLIN_GUEST_DIR is set but assets are missing
  */
 export async function ensureGuestAssets(): Promise<GuestAssets> {
   const assetDir = getAssetDir();
+
+  // If GONDOLIN_GUEST_DIR is explicitly set, don't download - require assets to exist
+  if (process.env.GONDOLIN_GUEST_DIR) {
+    return loadGuestAssets(assetDir);
+  }
 
   // Check if already present
   if (!assetsExist(assetDir)) {

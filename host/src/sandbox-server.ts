@@ -236,7 +236,13 @@ export async function resolveSandboxServerOptionsAsync(
     return resolveSandboxServerOptions(options);
   }
 
-  // Check for local dev paths first
+  // If GONDOLIN_GUEST_DIR is set, use it (don't fall back to local dev paths)
+  if (process.env.GONDOLIN_GUEST_DIR) {
+    const assets = await ensureGuestAssets();
+    return resolveSandboxServerOptions(options, assets);
+  }
+
+  // Check for local dev paths
   const localAssets = getLocalGuestAssets();
   if (localAssets.kernelPath && localAssets.initrdPath && localAssets.rootfsPath) {
     return resolveSandboxServerOptions(options, localAssets as GuestAssets);

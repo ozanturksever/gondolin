@@ -82,6 +82,20 @@ const vm = await VM.create({
 
 See [`host/README.md`](host/README.md) for full API details.
 
+## Custom Images
+
+Build custom guest images with your own packages, kernel, and init scripts:
+
+```bash
+gondolin build --init-config > build-config.json
+# Edit build-config.json to add packages (rust, go, etc.)
+gondolin build --config build-config.json --output ./my-assets
+GONDOLIN_GUEST_DIR=./my-assets gondolin bash
+```
+
+See [`docs/custom-images.md`](docs/custom-images.md) for the full configuration
+reference and recipes.
+
 ## Choices
 
 * **VM:** we looked at Firecracker and QEMU and went with the latter.  A key motivation
@@ -109,7 +123,7 @@ See [`host/README.md`](host/README.md) for full API details.
   plumbing for the sandbox to work (it's the endpoint for the virtio protocol). The
   TypeScript library talks to that host controller in-process (same Node runtime),
   keeping the control path local and synchronous.
-* **Programming languages:** the sandbox is written in Zig because it produces small
+* **Programming languages:** the sandbox is written in Zig (0.15.2) because it produces small
   binaries and allows trivial cross compilation.  The host is written in TypeScript
   because it allows plugging in custom behavior trivially for the VM.
 
