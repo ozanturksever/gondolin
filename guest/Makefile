@@ -1,4 +1,4 @@
-.PHONY: build build-bins build-inner test clean run assets qemu lint typecheck format
+.PHONY: build build-bins build-inner test clean run assets lint typecheck format
 
 RUN_PARALLEL ?= ../scripts/run-parallel
 
@@ -33,37 +33,19 @@ endif
 
 ifeq ($(HOST_ARCH),arm64)
 DEFAULT_ARCH := aarch64
-DEFAULT_QEMU := qemu-system-aarch64
 else ifeq ($(HOST_ARCH),aarch64)
 DEFAULT_ARCH := aarch64
-DEFAULT_QEMU := qemu-system-aarch64
 else
 DEFAULT_ARCH := x86_64
-DEFAULT_QEMU := qemu-system-x86_64
 endif
 
 ALPINE_ARCH ?= $(DEFAULT_ARCH)
 ifeq ($(ALPINE_ARCH),arm64)
 ALPINE_ARCH := aarch64
 endif
-QEMU ?= $(DEFAULT_QEMU)
-QEMU_MACHINE :=
-ifeq ($(ALPINE_ARCH),aarch64)
-QEMU_MACHINE := -machine virt
-endif
-
 GONDOLIN_BUILD_ARGS = --output $(IMAGE_OUT) --arch $(ALPINE_ARCH)
 GONDOLIN_BUILD_ARGS += $(if $(strip $(GONDOLIN_BUILD_CONFIG)),--config $(GONDOLIN_BUILD_CONFIG),)
 GONDOLIN_BUILD_ARGS += $(GONDOLIN_BUILD_EXTRA_ARGS)
-
-QEMU_MEMORY ?= 256M
-ifeq ($(ALPINE_ARCH),aarch64)
-QEMU_MEMORY ?= 512M
-endif
-QEMU_SMP ?= 2
-QEMU_SERIAL ?= stdio
-QEMU_WAIT ?= on
-VIRTIO_SOCK ?= $(IMAGE_OUT)/virtio.sock
 
 build:
 	@$(RUN_PARALLEL) -j 1 \
@@ -83,23 +65,6 @@ assets: $(IMAGE_INITRAMFS) $(IMAGE_ROOTFS) $(KERNEL)
 
 $(IMAGE_INITRAMFS) $(IMAGE_ROOTFS) $(KERNEL): $(BUILD_DEPS)
 	$(GONDOLIN) build $(GONDOLIN_BUILD_ARGS)
-
-qemu: assets
-	@rm -f $(VIRTIO_SOCK)
-	$(QEMU) $(QEMU_MACHINE) \
-		-nodefaults -no-reboot -m $(QEMU_MEMORY) -smp $(QEMU_SMP) \
-		-kernel $(KERNEL) \
-		-initrd $(IMAGE_INITRAMFS) \
-		-drive file=$(IMAGE_ROOTFS),format=raw,if=none,id=drive0,snapshot=on \
-		-device virtio-blk-pci,drive=drive0 \
-		-append "console=ttyS0 initramfs_async=1" \
-		-nographic \
-		-serial $(QEMU_SERIAL) \
-		-object rng-random,filename=/dev/urandom,id=rng0 \
-		-device virtio-rng-pci,rng=rng0 \
-		-chardev socket,id=virtiocon0,path=$(VIRTIO_SOCK),server=on,wait=$(QEMU_WAIT) \
-		-device virtio-serial-pci \
-		-device virtserialport,chardev=virtiocon0,name=virtio-port
 
 format:
 	$(ZIG) fmt $(ZIG_SOURCES)

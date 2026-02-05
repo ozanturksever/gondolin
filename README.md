@@ -129,5 +129,5 @@ reference and recipes.
 
 ## Components
 
-- [`guest/`](guest/) — Zig-based `sandboxd` daemon, Alpine initramfs build, and QEMU helpers.
+- [`guest/`](guest/) — Zig-based `sandboxd` daemon and Alpine initramfs build.
 - [`host/`](host/) — TypeScript host controller and in-process control plane for the guest.

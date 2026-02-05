@@ -1,8 +1,7 @@
 # Gondolin Guest Sandbox
 
 This directory contains the guest-side components for the Gondolin sandbox: the
-Zig `sandboxd` supervisor, the Alpine initramfs image builder, and helper
-tooling to boot the micro-VM under QEMU.
+Zig `sandboxd` supervisor and the Alpine initramfs image builder.
 
 ## What it does
 
@@ -19,7 +18,7 @@ tooling to boot the micro-VM under QEMU.
 - `src/shared/` — Shared CBOR/protocol/RPC helpers.
 - `image/` — initramfs build scripts and the minimal `/init`.
 - `build.zig` — Zig build definition for `sandboxd`.
-- `Makefile` — helpers to build, create images, and run QEMU.
+- `Makefile` — helpers to build and create images.
 
 ## Requirements
 
@@ -54,11 +53,10 @@ make build GONDOLIN_BUILD_CONFIG=../build-config.json
 `make build` invokes the shared `gondolin build` pipeline and will produce all
 assets in `image/out/`.
 
-Boot the guest under QEMU (builds assets if needed):
+Boot the guest in a VM (builds assets if needed):
 
 ```sh
-make qemu
+npx @earendil-works/gondolin bash
 ```
 
-The QEMU target creates a virtio-serial socket at `image/out/virtio.sock` for
-the host controller to connect.
+The host manages the full QEMU lifecycle automatically.
