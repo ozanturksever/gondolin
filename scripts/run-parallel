@@ -131,7 +131,7 @@ class ParallelRunner:
         self.tasks = tasks
         self.max_jobs = max_jobs
         self.fail_fast = fail_fast
-        self.no_capture = os.getenv("RUN_PARALLEL_NO_CAPTURE") == "1"
+        self.no_capture = os.getenv("RUN_PARALLEL_NO_CAPTURE") == "1" or os.getenv("CI") == "true"
         self.spinner_index = 0
         self.lines_printed = 0
         self.first_failure_code: int | None = None
