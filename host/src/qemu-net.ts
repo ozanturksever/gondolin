@@ -9,6 +9,7 @@ import crypto from "crypto";
 import dns from "dns";
 import { Duplex } from "stream";
 import type { ReadableStream as WebReadableStream } from "stream/web";
+import { monitorEventLoopDelay, performance } from "perf_hooks";
 import forge from "node-forge";
 
 import { loadOrCreateMitmCa, resolveMitmCertDir } from "./mitm";
@@ -39,6 +40,16 @@ const HOP_BY_HOP_HEADERS = new Set([
   "trailer",
   "upgrade",
 ]);
+
+type IcmpTiming = {
+  srcIP: string;
+  dstIP: string;
+  id: number;
+  seq: number;
+  rxTime: number;
+  replyTime: number;
+  size: number;
+};
 
 type UdpSession = {
   socket: dgram.Socket;
@@ -177,10 +188,17 @@ export class QemuNetworkBackend extends EventEmitter {
   private caPromise: Promise<CaCert> | null = null;
   private tlsContexts = new Map<string, tls.SecureContext>();
   private tlsContextPromises = new Map<string, Promise<tls.SecureContext>>();
+  private readonly icmpTimings = new Map<string, IcmpTiming>();
+  private icmpDebugBuffer = Buffer.alloc(0);
+  private eventLoopDelay: ReturnType<typeof monitorEventLoopDelay> | null = null;
   private readonly maxHttpBodyBytes: number;
 
   constructor(private readonly options: QemuNetworkOptions) {
     super();
+    if (options.debug) {
+      this.eventLoopDelay = monitorEventLoopDelay({ resolution: 10 });
+      this.eventLoopDelay.enable();
+    }
     this.mitmDir = resolveMitmCertDir(options.mitmCertDir);
     this.maxHttpBodyBytes = options.maxHttpBodyBytes ?? DEFAULT_MAX_HTTP_BODY_BYTES;
   }
@@ -288,8 +306,13 @@ export class QemuNetworkBackend extends EventEmitter {
     this.stack.on("network-activity", () => this.flush());
     this.stack.on("error", (err) => this.emit("error", err));
     if (this.options.debug) {
+      this.icmpTimings.clear();
+      this.icmpDebugBuffer = Buffer.alloc(0);
       this.stack.on("dhcp", (state, ip) => {
         this.emit("log", `[net] dhcp ${state} ${ip}`);
+      });
+      this.stack.on("icmp", (info) => {
+        this.recordIcmpTiming(info as IcmpTiming);
       });
     }
   }
@@ -300,6 +323,8 @@ export class QemuNetworkBackend extends EventEmitter {
       const chunk = this.stack.readFromNetwork(64 * 1024);
       if (!chunk || chunk.length === 0) break;
       if (this.options.debug) {
+        const now = performance.now();
+        this.trackIcmpReplies(chunk, now);
         this.emit("log", `[net] tx ${chunk.length} bytes to qemu`);
       }
       const ok = this.socket.write(chunk);
@@ -308,6 +333,77 @@ export class QemuNetworkBackend extends EventEmitter {
         return;
       }
     }
+  }
+
+  private recordIcmpTiming(info: IcmpTiming) {
+    const key = this.icmpKey(info.srcIP, info.dstIP, info.id, info.seq);
+    this.icmpTimings.set(key, info);
+  }
+
+  private icmpKey(srcIP: string, dstIP: string, id: number, seq: number) {
+    return `${id}:${seq}:${srcIP}:${dstIP}`;
+  }
+
+  private trackIcmpReplies(chunk: Buffer, now: number) {
+    this.icmpDebugBuffer = Buffer.concat([this.icmpDebugBuffer, chunk]);
+    while (this.icmpDebugBuffer.length >= 4) {
+      const frameLen = this.icmpDebugBuffer.readUInt32BE(0);
+      if (this.icmpDebugBuffer.length < 4 + frameLen) break;
+      const frame = this.icmpDebugBuffer.subarray(4, 4 + frameLen);
+      this.icmpDebugBuffer = this.icmpDebugBuffer.subarray(4 + frameLen);
+      this.logIcmpReplyFrame(frame, now);
+    }
+  }
+
+  private logIcmpReplyFrame(frame: Buffer, now: number) {
+    if (frame.length < 14) return;
+    const etherType = frame.readUInt16BE(12);
+    if (etherType !== 0x0800) return;
+
+    const ip = frame.subarray(14);
+    if (ip.length < 20) return;
+    const version = ip[0] >> 4;
+    if (version !== 4) return;
+    const headerLen = (ip[0] & 0x0f) * 4;
+    if (ip.length < headerLen) return;
+    if (ip[9] !== 1) return;
+
+    const totalLen = ip.readUInt16BE(2);
+    const payloadEnd = Math.min(ip.length, totalLen);
+    if (payloadEnd <= headerLen) return;
+
+    const icmp = ip.subarray(headerLen, payloadEnd);
+    if (icmp.length < 8) return;
+    if (icmp[0] !== 0) return;
+
+    const srcIP = `${ip[12]}.${ip[13]}.${ip[14]}.${ip[15]}`;
+    const dstIP = `${ip[16]}.${ip[17]}.${ip[18]}.${ip[19]}`;
+    const id = icmp.readUInt16BE(4);
+    const seq = icmp.readUInt16BE(6);
+
+    const key = this.icmpKey(dstIP, srcIP, id, seq);
+    const timing = this.icmpTimings.get(key);
+    if (!timing) return;
+
+    this.icmpTimings.delete(key);
+
+    const processingMs = timing.replyTime - timing.rxTime;
+    const queuedMs = now - timing.replyTime;
+    const totalMs = now - timing.rxTime;
+
+    let eventLoopInfo = "";
+    if (this.eventLoopDelay) {
+      const meanMs = this.eventLoopDelay.mean / 1e6;
+      const maxMs = this.eventLoopDelay.max / 1e6;
+      eventLoopInfo = ` evloop_mean=${meanMs.toFixed(3)}ms evloop_max=${maxMs.toFixed(3)}ms`;
+      this.eventLoopDelay.reset();
+    }
+
+    this.emit(
+      "log",
+      `[net] icmp echo id=${timing.id} seq=${timing.seq} ${timing.srcIP} -> ${timing.dstIP} size=${timing.size} ` +
+        `processing=${processingMs.toFixed(3)}ms queued=${queuedMs.toFixed(3)}ms total=${totalMs.toFixed(3)}ms${eventLoopInfo}`
+    );
   }
 
   private cleanupSessions() {

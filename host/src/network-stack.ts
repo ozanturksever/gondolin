@@ -1,4 +1,5 @@
 import { EventEmitter } from "events";
+import { performance } from "perf_hooks";
 import dns from "dns";
 import net from "net";
 
@@ -372,17 +373,36 @@ export class NetworkStack extends EventEmitter {
 
   handleICMP(data: Buffer, srcIP: Buffer, dstIP: Buffer) {
     const type = data[0];
-    if (type === 8) {
-      const reply = Buffer.alloc(data.length);
-      data.copy(reply);
-      reply[0] = 0;
-      reply[2] = 0;
-      reply[3] = 0;
+    if (type !== 8) return;
 
-      const ck = this.calculateChecksum(reply);
-      reply.writeUInt16BE(ck, 2);
+    const wantsDebug = this.listenerCount("icmp") > 0;
+    const canParse = data.length >= 8;
+    const rxTime = wantsDebug ? performance.now() : 0;
+    const id = wantsDebug && canParse ? data.readUInt16BE(4) : 0;
+    const seq = wantsDebug && canParse ? data.readUInt16BE(6) : 0;
 
-      this.sendIP(reply, IP_PROTO_ICMP, dstIP, srcIP);
+    const reply = Buffer.alloc(data.length);
+    data.copy(reply);
+    reply[0] = 0;
+    reply[2] = 0;
+    reply[3] = 0;
+
+    const ck = this.calculateChecksum(reply);
+    reply.writeUInt16BE(ck, 2);
+
+    this.sendIP(reply, IP_PROTO_ICMP, dstIP, srcIP);
+
+    if (wantsDebug && canParse) {
+      const replyTime = performance.now();
+      this.emit("icmp", {
+        srcIP: srcIP.join("."),
+        dstIP: dstIP.join("."),
+        id,
+        seq,
+        rxTime,
+        replyTime,
+        size: data.length,
+      });
     }
   }
 
