@@ -218,7 +218,9 @@ export class FsRpcService {
     const { openFlags, truncate, append } = parseOpenFlagsForOpen(flags);
     const handle = await this.provider.open(entryPath, openFlags);
     if (truncate) {
-      await this.truncatePath(entryPath, 0);
+      // Truncate via the opened handle so providers that snapshot file state on open
+      // still observe the truncation (MemoryProvider behaves this way).
+      await handle.truncate(0);
     }
     const fh = this.allocateHandle(handle, ino, entryPath, append);
     return { fh, open_flags: 0 };
@@ -586,8 +588,12 @@ type ErrnoResult = {
 
 function normalizeError(error: unknown): ErrnoResult {
   if (isErrnoError(error)) {
+    let errno = typeof error.errno === "number" ? error.errno : ERRNO.EIO;
+    // Some providers (and some syscall layers) use negative errno values.
+    // Normalize to a positive errno for the RPC protocol.
+    if (errno < 0) errno = -errno;
     return {
-      errno: typeof error.errno === "number" ? error.errno : ERRNO.EIO,
+      errno,
       message: error.message,
     };
   }
