@@ -1103,3 +1103,18 @@ function parseEnvEntry(entry: string): [string, string] {
 function mapToEnvArray(envMap: Map<string, string>): string[] {
   return Array.from(envMap.entries(), ([key, value]) => `${key}=${value}`);
 }
+
+/** @internal */
+// Expose internal helpers for unit tests. Not part of the public API.
+export const __test = {
+  normalizeCommand,
+  resolveVmVfs,
+  resolveFuseConfig,
+  resolveMitmMounts,
+  createMitmCaProvider,
+  buildShellEnv,
+  mergeEnvInputs,
+  envInputToEntries,
+  parseEnvEntry,
+  mapToEnvArray,
+};
