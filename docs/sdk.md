@@ -47,7 +47,7 @@ Notable consequences:
   policy; the host enforces policy against the HTTP `Host` header and does its own
   resolution to prevent DNS rebinding attacks.
 
-For deeper conceptual background, see [`docs/network.md`](./network.md).
+For deeper conceptual background, see [Network stack](./network.md).
 
 ## VFS providers
 
@@ -111,7 +111,7 @@ console.log("Kernel:", assets.kernelPath);
 ## Building custom guest images
 
 The full custom image documentation is here:
-- [`docs/custom-images.md`](./custom-images.md)
+- [Building Custom Images](./custom-images.md)
 
 Quick-start reminder:
 
@@ -140,4 +140,4 @@ await vm.close();
 
 ## Debug logging
 
-See [`docs/debug.md`](./debug.md).
+See [Debug Logging](./debug.md).

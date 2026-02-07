@@ -199,7 +199,7 @@ gondolin build --verify ./my-assets
 ```
 
 For a full configuration reference and build requirements, see:
-[`docs/custom-images.md`](./custom-images.md).
+[Building Custom Images](./custom-images.md).
 
 ## Environment variables
 
@@ -208,7 +208,7 @@ For a full configuration reference and build requirements, see:
   - If set, Gondolin uses this directory instead of downloading cached assets
 
 - `GONDOLIN_DEBUG`
-  - Enable debug logging (see [`docs/debug.md`](./debug.md))
+  - Enable debug logging (see [Debug Logging](./debug.md))
 
 ## Help
 

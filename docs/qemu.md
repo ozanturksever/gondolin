@@ -87,7 +87,7 @@ This is required for Gondolin's goals:
 A generic NAT would turn the guest into a normal machine on your network, which
 is the opposite of the threat model.
 
-For details of the mediation pipeline, see docs/network.md.
+For details of the mediation pipeline, see [Network stack](./network.md).
 
 ## Control plane: virtio-serial
 
