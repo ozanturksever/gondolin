@@ -60,19 +60,22 @@ console.log("stderr:\n", result.stderr);
 await vm.close();
 ```
 
-## Guides
+## Using Gondolin
 
-- [CLI](./cli.md): Run interactive shells and commands inside a micro-VM
-- [JavaScript SDK Reference](./sdk.md): how to use the JavaScript SDK
+- [CLI](./cli.md): run interactive shells and commands inside a micro-VM
+- [TypeScript SDK](./sdk.md): programmatic control via the TypeScript/JavaScript API
 - [SSH](./ssh.md): enable SSH access to the guest with safe defaults
-- [Debug Logging](./debug.md): documents the debug logging facility
-- [Custom Images](./custom-images.md): how to build custom guest images (kernel/initramfs/rootfs) and configure packages/init scripts
-- [Overlay Root](./root-overlay.md): boot the guest with an overlayfs root (capture guest writes)
-- [Limitations](./limitations.md): current product limitations and missing features
+- [Debug Logging](./debug.md): how to enable and interpret debug logging
 
-## Architecture
+## Images & Filesystem
 
-- [Overview](./architecture.md): high-level component overview and data flow
-- [Security Design](./security.md): Threat model, guarantees, and safe operating envelope
-- [Network Stack](./network.md): how networking works (HTTP/TLS mediation, policy enforcement, DNS)
-- [QEMU](./qemu.md): how Gondolin runs QEMU and how this stays consistent on macOS and Linux
+- [Custom Images](./custom-images.md): build custom guest images (kernel/initramfs/rootfs) and configure packages/init scripts
+- [Overlay Root](./root-overlay.md): boot with an overlayfs root to capture guest writes
+
+## Design & Internals
+
+- [Architecture Overview](./architecture.md): high-level component overview and data flow
+- [Security Design](./security.md): threat model, guarantees, and safe operating envelope
+- [Network Stack](./network.md): HTTP/TLS mediation, policy enforcement, DNS, and DNS rebinding protection
+- [QEMU Backend](./qemu.md): QEMU integration and macOS/Linux parity
+- [Limitations](./limitations.md): current limitations and missing features

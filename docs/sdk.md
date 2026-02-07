@@ -1,4 +1,4 @@
-# JavaScript SDK
+# TypeScript SDK
 
 This section contains the more detailed, programmatic documentation for the
 `@earendil-works/gondolin` TypeScript SDK (VM lifecycle, network policy, VFS,

@@ -31,20 +31,26 @@ copyright = "<a href=\"https://earendil.com/\">Earendil Inc.</a>"
 # Sidebar navigation
 nav = [
     {"Home" = "index.md"},
-    {"Guides" = [
+
+    {"Using Gondolin" = [
         {"CLI" = "cli.md"},
-        {"JavaScript SDK" = "sdk.md"},
+        {"TypeScript SDK" = "sdk.md"},
         {"SSH" = "ssh.md"},
         {"Debug Logging" = "debug.md"},
+    ]},
+
+    {"Images & Filesystem" = [
         {"Custom Images" = "custom-images.md"},
         {"Overlay Root" = "root-overlay.md"},
-        {"Limitations" = "limitations.md"},
     ]},
-    {"Architecture" = [
-        {"Overview" = "architecture.md"},
+
+
+    {"Design & Internals" = [
+        {"Architecture Overview" = "architecture.md"},
         {"Security Design" = "security.md"},
         {"Network Stack" = "network.md"},
-        {"QEMU" = "qemu.md"},
+        {"QEMU Backend" = "qemu.md"},
+        {"Limitations" = "limitations.md"},
     ]},
 ]
 
