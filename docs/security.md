@@ -133,40 +133,36 @@ and a backend that attaches to QEMU's `-netdev stream` Unix socket
 Key enforcement points:
 
 1. **Protocol allowlist (TCP flow sniffing)**
-  - For each outgoing TCP flow, the host sniffs the first bytes and classifies it as:
-    - `http` (HTTP/1.x request line)
-    - `tls` (TLS ClientHello record)
-    - otherwise **denied** (`unknown-protocol`)
-  - HTTP `CONNECT` is explicitly denied (`connect-not-allowed`).
+    - For each outgoing TCP flow, the host sniffs the first bytes and classifies it as:
+        - `http` (HTTP/1.x request line)
+        - `tls` (TLS ClientHello record)
+        - otherwise **denied** (`unknown-protocol`)
+    - HTTP `CONNECT` is explicitly denied (`connect-not-allowed`).
 
     This prevents the guest from tunneling arbitrary TCP protocols.
 
 2. **UDP is blocked except for DNS**
-  - Only UDP destination port `53` is forwarded; other UDP is blocked.  See note on DNS
-    below.
+    - Only UDP destination port `53` is forwarded; other UDP is blocked. See note on DNS below.
 
 3. **HTTP/HTTPS is bridged by the host**
-  - For `http` flows, the host parses the request and replays it using `fetch` (undici).
-  - For `tls` flows, the host performs a **TLS MITM** (see below) to recover
-    the HTTP request, then replays via `fetch`.
+    - For `http` flows, the host parses the request and replays it using `fetch` (undici).
+    - For `tls` flows, the host performs a **TLS MITM** (see below) to recover the HTTP request, then replays via `fetch`.
 
 4. **Host allowlist and internal-range blocking**
-  - `createHttpHooks()` (see `host/src/http-hooks.ts`) produces an `httpHooks.isAllowed()` implementation.
-  - By default, it blocks internal ranges (`blockInternalRanges: true`), including:
-    - IPv4: 127/8, 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, 0.0.0.0/8, broadcast
-    - IPv6: loopback, link-local, ULA, and IPv4-mapped variants
-  - It can also require that the request hostname matches a configured allowlist (with `*` wildcards).
+    - `createHttpHooks()` (see `host/src/http-hooks.ts`) produces an `httpHooks.isAllowed()` implementation.
+    - By default, it blocks internal ranges (`blockInternalRanges: true`), including:
+        - IPv4: 127/8, 10/8, 172.16/12, 192.168/16, 169.254/16, 100.64/10, 0.0.0.0/8, broadcast
+        - IPv6: loopback, link-local, ULA, and IPv4-mapped variants
+    - It can also require that the request hostname matches a configured allowlist (with `*` wildcards).
 
 5. **DNS rebinding protection**
-  Gondolin checks policy in *two* places:
-  - `ensureRequestAllowed()` resolves the hostname and checks `isAllowed({ hostname, ip, ... })`.
-  - When using the default `fetch`, Gondolin installs a custom undici
-    dispatcher with a guarded `lookup()` (`createLookupGuard()`), which re-checks
-    `isAllowed()` against the *actual resolved IPs used by the connection*.
+    Gondolin checks policy in *two* places:
+    - `ensureRequestAllowed()` resolves the hostname and checks `isAllowed({ hostname, ip, ... })`.
+    - When using the default `fetch`, Gondolin installs a custom undici dispatcher with a guarded `lookup()` (`createLookupGuard()`), which re-checks `isAllowed()` against the *actual resolved IPs used by the connection*.
 
 6. **Redirect policy is enforced by the host**
-  - The host follows redirects itself (`redirect: "manual"` + explicit handling).
-  - Each redirect target is revalidated against policy before fetching.
+    - The host follows redirects itself (`redirect: "manual"` + explicit handling).
+    - Each redirect target is revalidated against policy before fetching.
 
 **Guarantee:** the guest cannot open raw TCP tunnels, cannot use UDP (except DNS), and cannot
 reach blocked networks (e.g. localhost/metadata) *through DNS tricks or redirects*, as long
@@ -287,34 +283,33 @@ These are rules to not compromise the security guarantees of the system:
 ### Network Policy
 
 1. **Use an allowlist; avoid `*`**
-  - Prefer exact hosts (`api.github.com`) over wildcards (`*.github.com`).
-  - Treat redirects as part of the policy design (the host will follow them and enforce policy on each hop).
+    - Prefer exact hosts (`api.github.com`) over wildcards (`*.github.com`).
+    - Treat redirects as part of the policy design (the host will follow them and enforce policy on each hop).
 
 2. **Keep `blockInternalRanges: true`**
-  - This is on by default in `createHttpHooks()`.
-  - Disabling it reintroduces localhost/metadata risks.
+    - This is on by default in `createHttpHooks()`.
+    - Disabling it reintroduces localhost/metadata risks.
 
 3. **Assume allowed hosts can receive any data the guest can read**
-  - Gondolin prevents network egress to *other* hosts, but does not stop the
-    guest from uploading arbitrary data to an allowed host.
-   - If you mount sensitive host data read-write/read-only, consider it exfiltratable to allowed hosts.
+    - Gondolin prevents network egress to *other* hosts, but does not stop the guest from uploading arbitrary data to an allowed host.
+    - If you mount sensitive host data read-write/read-only, consider it exfiltratable to allowed hosts.
 
 4. **If you allow more than one host, add auditing**
-   - Use `httpHooks.onRequest` / `onResponse` to log and/or block unexpected paths or methods.
+    - Use `httpHooks.onRequest` / `onResponse` to log and/or block unexpected paths or methods.
 
 ### Secrets
 
 1. **Only provide secrets via `createHttpHooks({ secrets: ... })`**
-  - Do not mount `~/.aws`, `~/.config`, `.env`, etc. into the guest.
-  - Do not pass real secrets in `VM.env`.
+    - Do not mount `~/.aws`, `~/.config`, `.env`, etc. into the guest.
+    - Do not pass real secrets in `VM.env`.
 
 2. **Secrets are only substituted in HTTP headers**
-  - If you put placeholders in a request body or URL, they will *not* be replaced.
-  - Design your client code to pass credentials in headers.
+    - If you put placeholders in a request body or URL, they will *not* be replaced.
+    - Design your client code to pass credentials in headers.
 
 3. **Don't rely on placeholders being "unguessable"**
-  - Placeholders are random and not the secret, but the guest can still transmit them.
-  - Your security relies on the fact that placeholders are useless without host substitution.
+    - Placeholders are random and not the secret, but the guest can still transmit them.
+    - Your security relies on the fact that placeholders are useless without host substitution.
 
 ### Filesystem Mounts
 
@@ -322,9 +317,8 @@ These are rules to not compromise the security guarantees of the system:
 2. **Use `ReadonlyProvider(RealFSProvider(...))` for host directories you must expose**
 3. **Avoid mounting your whole home directory**
 4. **Be careful with mounting `/`**
-  - If you mount a custom provider at `/`, you might hide `/etc/ssl/certs`.
-  - Gondolin automatically injects a read-only CA cert mount at `/etc/ssl/certs`
-    unless you already mounted that path.
+    - If you mount a custom provider at `/`, you might hide `/etc/ssl/certs`.
+    - Gondolin automatically injects a read-only CA cert mount at `/etc/ssl/certs` unless you already mounted that path.
 
 ### TLS MITM CA Handling
 
