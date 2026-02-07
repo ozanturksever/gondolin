@@ -11,7 +11,9 @@ GONDOLIN_BUILD_EXTRA_ARGS ?=
 
 ZIG_SOURCES := $(shell find src -name '*.zig') build.zig
 ZIG_BUILD_DEPS := $(ZIG_SOURCES) build.zig.zon
-IMAGE_BUILD_DEPS := image/build.sh image/init image/initramfs-init
+# NOTE: guest image builds are driven by the host TypeScript builder (host/src/build-alpine.ts).
+# build.sh remains as a legacy/manual script but is not part of the default pipeline.
+IMAGE_BUILD_DEPS := image/init image/initramfs-init
 HOST_BUILD_DEPS := $(shell find ../host/src ../host/bin -name '*.ts') ../host/package.json ../host/tsconfig.json
 GONDOLIN_CONFIG_DEP := $(if $(strip $(GONDOLIN_BUILD_CONFIG)),$(GONDOLIN_BUILD_CONFIG))
 BUILD_DEPS := $(ZIG_BUILD_DEPS) $(IMAGE_BUILD_DEPS) $(HOST_BUILD_DEPS) $(GONDOLIN_CONFIG_DEP)

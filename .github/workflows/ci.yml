@@ -98,6 +98,76 @@ jobs:
           path: ${{ matrix.artifact }}.tar.gz
           retention-days: 7
 
+  container-build:
+    name: Container Build (smoke)
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 8
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+
+      - name: Install Zig
+        run: |
+          curl -L https://ziglang.org/download/0.15.1/zig-x86_64-linux-0.15.1.tar.xz | tar -xJ
+          echo "$PWD/zig-x86_64-linux-0.15.1" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build host dist
+        run: pnpm run build
+
+      - name: Build guest binaries
+        run: |
+          cd guest
+          zig build -Doptimize=ReleaseSmall
+
+      - name: Verify Docker is available
+        run: docker info
+
+      - name: Smoke test container build (forces docker)
+        timeout-minutes: 15
+        run: |
+          cat > build-config-container-smoke.json <<'JSON'
+          {
+            "arch": "x86_64",
+            "distro": "alpine",
+            "alpine": {
+              "version": "3.23.0",
+              "kernelPackage": "linux-virt",
+              "kernelImage": "vmlinuz-virt",
+              "rootfsPackages": ["linux-virt"],
+              "initramfsPackages": []
+            },
+            "container": {
+              "force": true,
+              "image": "alpine:3.23",
+              "runtime": "docker"
+            },
+            "sandboxdPath": "./guest/zig-out/bin/sandboxd",
+            "sandboxfsPath": "./guest/zig-out/bin/sandboxfs",
+            "sandboxsshPath": "./guest/zig-out/bin/sandboxssh"
+          }
+          JSON
+
+          node host/dist/bin/gondolin.js build \
+            --config build-config-container-smoke.json \
+            --output ./tmp-container-assets \
+            --quiet
+
+          test -f ./tmp-container-assets/manifest.json
+          test -s ./tmp-container-assets/vmlinuz-virt
+          test -s ./tmp-container-assets/initramfs.cpio.lz4
+          test -s ./tmp-container-assets/rootfs.ext4
+
   test:
     name: Test
     needs: [check, build-guest]

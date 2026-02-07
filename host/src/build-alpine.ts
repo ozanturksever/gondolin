@@ -586,37 +586,17 @@ async function installPackages(
 // ---------------------------------------------------------------------------
 
 export async function downloadFile(url: string, dest: string): Promise<void> {
-  // Use undici which is already a dependency of this package
-  const { request } = await import("undici");
+  // Use Node's built-in `fetch` (available in Node >= 18)
+  // so the builder can run in minimal environments (e.g. containers)
+  // without any extra npm dependencies.
+  const res = await fetch(url, { redirect: "follow" });
 
-  let finalUrl = url;
-  const maxRedirects = 5;
-
-  for (let i = 0; i <= maxRedirects; i++) {
-    const res = await request(finalUrl, {
-      method: "GET",
-      maxRedirections: maxRedirects,
-    });
-
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      const chunks: Buffer[] = [];
-      for await (const chunk of res.body) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-      }
-      fs.writeFileSync(dest, Buffer.concat(chunks));
-      return;
-    }
-
-    // Consume body to free the socket
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    for await (const _ of res.body) {
-      // drain
-    }
-
-    throw new Error(`Failed to download ${url}: HTTP ${res.statusCode}`);
+  if (!res.ok) {
+    throw new Error(`Failed to download ${url}: HTTP ${res.status}`);
   }
 
-  throw new Error(`Too many redirects for ${url}`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  fs.writeFileSync(dest, buf);
 }
 
 // ---------------------------------------------------------------------------
