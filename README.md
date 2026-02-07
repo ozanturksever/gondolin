@@ -58,7 +58,7 @@ Start with [`docs/index.md`](docs/index.md).  It links to the conceptual guides
 (security model, network stack, QEMU design and cross-platform behavior), plus
 practical docs like CLI usage, debug logging, and building custom guest images.
 
-For the TypeScript API surface, see [`host/README.md`](host/README.md).
+For the TypeScript API surface, see [`docs/sdk.md`](docs/sdk.md).
 
 ## Why Gondolin?
 
@@ -108,7 +108,8 @@ In the design of Gondolin we made various architectural choices that require ela
 ## Documentation
 
 - [`docs/index.md`](docs/index.md) — additional guides (debug logging, custom images, ...)
-- [`host/README.md`](host/README.md) — TypeScript API reference
+- [`docs/sdk.md`](docs/sdk.md) — TypeScript SDK reference
+- [`host/README.md`](host/README.md) — quick start + hello world
 
 ## Programmable Filesystem
 
@@ -129,7 +130,7 @@ const vm = await VM.create({
 });
 ```
 
-See [`host/README.md`](host/README.md) for full API details.
+See [`docs/sdk.md`](docs/sdk.md) for full SDK/API details.
 
 ## Custom Images
 
@@ -149,3 +150,13 @@ reference and recipes.
 
 - [`guest/`](guest/) — Zig-based `sandboxd` daemon and Alpine initramfs build.
 - [`host/`](host/) — TypeScript host controller and in-process control plane for the guest.
+
+## AI Use Disclaimer
+
+This codebase has been built with the support of coding agents.
+
+## License and Links
+
+- [Documentation](./docs/index.md)
+- [Issue Tracker](https://github.com/earendil-works/gondolin/issues)
+- License: [Apache-2.0](https://github.com/earendil-works/gondolin/blob/main/LICENSE)
