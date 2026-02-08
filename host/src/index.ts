@@ -45,10 +45,18 @@ export {
   RpcFsBackend,
   RpcFileHandle,
   FsRpcService,
+  AgentFSProvider,
+  initializeWorkspace,
   type VirtualFileHandle,
   type VfsHooks,
   type VfsHookContext,
   type FsRpcMetrics,
+  type AgentFSLike,
+  type AgentFSStatsLike,
+  type AgentFSFileHandleLike,
+  type AgentFSDirEntryLike,
+  type AgentFSChangeHooks,
+  type WorkspaceInitOptions,
   MAX_RPC_DATA,
 } from "./vfs";
 
