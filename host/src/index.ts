@@ -92,6 +92,57 @@ export {
   type AssetManifest,
 } from "./assets";
 
+// Phase 3 — Host Library APIs
+export {
+  createAgentSandbox,
+  type CreateSandboxOptions,
+  type SandboxHandle,
+  type SandboxExecResult,
+  type SandboxStatus,
+  type AgentType,
+} from "./create-sandbox";
+
+export {
+  AgentToolsEdge,
+  type AgentToolsEdgeOptions,
+} from "./agent-tools-edge";
+
+export {
+  WorkspaceServiceEdge,
+  type WorkspaceServiceEdgeOptions,
+  type VMFactory,
+  type AgentFSFactory,
+  type SandboxRecord,
+} from "./workspace-service-edge";
+
+export {
+  WebSocketTerminalProxy,
+  type WebSocketProxyOptions,
+  type TerminalSession,
+} from "./websocket-proxy";
+
+// Phase 4 — ConvexFileSync Engine
+export {
+  ConvexFileSync,
+  type ConvexSyncClient,
+  type ConvexFileSyncOptions,
+  type FileSyncUpdate,
+  type FileSyncDeletion,
+  type FileSyncEvent,
+  type SyncStats,
+} from "./convex-file-sync";
+
+export {
+  waitForVmEdge,
+  waitForHostEdge,
+  discoverWorkspaceEdges,
+  buildHostLabels,
+  buildVmLabels,
+  type EdgeInfo,
+  type DiscoverEdgesOptions,
+  type DiscoverEdgesFn,
+} from "./discovery";
+
 // Build configuration and builder
 export {
   type Architecture,
