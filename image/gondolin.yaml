@@ -1,0 +1,180 @@
+# Gondolin Agent Image Configuration
+# Defines the contents and layout of the Gondolin VM image for AI agent sandboxes.
+#
+# This image is built on Alpine Linux and includes:
+# - sandbox-agent (Rust binary for AI agent orchestration)
+# - dink-adapter (TypeScript sidecar for Dink edge registration)
+# - AI agent CLIs (claude-code, codex, opencode, amp)
+# - Node.js runtime (for dink-adapter)
+# - Base utilities (bash, git, curl, coreutils)
+#
+# Explicitly excluded: sshd, SSH keys, port-forwarding tools.
+# Terminal access is via TerminalService over Dink streaming (node-pty).
+
+name: gondolin-agent
+version: "0.1.0"
+description: "Gondolin VM image for AI agent sandboxes"
+
+# Base OS
+base:
+  distro: alpine
+  version: "3.23"
+  arch: aarch64
+
+# System packages installed via apk
+packages:
+  # Core utilities
+  - bash
+  - coreutils
+  - git
+  - curl
+  - ca-certificates
+  # Node.js runtime (for dink-adapter and AI agent CLIs)
+  - nodejs
+  - npm
+  # Python (for some AI agent tools)
+  - python3
+  - uv
+  # Kernel and hardware support
+  - linux-virt
+  - rng-tools
+  # FUSE support for sandboxfs
+  - fuse
+
+# Packages explicitly excluded from the image
+exclude:
+  - openssh
+  - openssh-server
+  - openssh-client
+  - dropbear
+
+# Compiled binaries to include
+binaries:
+  # Gondolin guest daemons (built from Zig source in guest/src/)
+  sandboxd:
+    source: guest/zig-out/bin/sandboxd
+    target: /usr/bin/sandboxd
+    description: "Guest control daemon — handles host RPC over virtio-serial"
+
+  sandboxfs:
+    source: guest/zig-out/bin/sandboxfs
+    target: /usr/bin/sandboxfs
+    description: "FUSE filesystem — mounts host VFS at /workspace"
+
+  sandboxssh:
+    source: guest/zig-out/bin/sandboxssh
+    target: /usr/bin/sandboxssh
+    description: "SSH helper (legacy, may be removed)"
+
+  # sandbox-agent (cross-compiled Rust binary)
+  sandbox-agent:
+    source: sandbox-agent/target/aarch64-unknown-linux-musl/release/sandbox-agent
+    target: /usr/bin/sandbox-agent
+    description: "AI agent orchestrator — manages Claude, Codex, OpenCode, Amp sessions"
+    cross_compile:
+      target: aarch64-unknown-linux-musl
+      source_dir: packages/sandbox-agent/server
+
+  # dink-adapter (bundled TypeScript sidecar)
+  dink-adapter:
+    source: gondolin/guest/dink-adapter/dist/index.mjs
+    target: /opt/dink-adapter/index.mjs
+    description: "Dink edge sidecar — proxies RPC to sandbox-agent, provides TerminalService"
+    bundle:
+      entry: packages/gondolin/guest/dink-adapter/index.ts
+      format: esm
+      platform: node
+      external:
+        - node-pty
+
+# AI agent CLIs installed via npm (globally in the image)
+npm_packages:
+  - name: "@anthropic-ai/claude-code"
+    description: "Claude Code CLI agent"
+  - name: "codex"
+    description: "OpenAI Codex CLI agent"
+  - name: "opencode"
+    description: "OpenCode CLI agent"
+  - name: "amp"
+    description: "Amp CLI agent"
+
+# Native Node.js modules (require compilation for target arch)
+native_modules:
+  - name: node-pty
+    description: "PTY support for TerminalService (no SSH needed)"
+    install_path: /opt/dink-adapter/node_modules/node-pty
+
+# Network policy
+network:
+  # Outbound connections allowed
+  outbound:
+    - description: "Dink NATS server (edge registration and RPC)"
+      host: "78.47.49.84"
+      port: 4222
+      protocol: nats
+    - description: "Dink HTTP API"
+      host: "78.47.49.84"
+      port: 8222
+      protocol: http
+    - description: "Internet (AI API calls — Anthropic, OpenAI, etc.)"
+      host: "*"
+      port: 443
+      protocol: https
+
+  # No inbound ports needed — dink-adapter connects outbound to dinkd
+  inbound: []
+
+  # Internal services (localhost only)
+  internal:
+    - description: "sandbox-agent HTTP API"
+      port: 2468
+      protocol: http
+
+# Init services (started by guest-init.sh)
+services:
+  - name: sandbox-agent
+    command: /usr/bin/sandbox-agent
+    port: 2468
+    health_check: "GET /v1/health"
+    start_order: 1
+    description: "AI agent orchestrator — must be healthy before dink-adapter starts"
+
+  - name: dink-adapter
+    command: "node /opt/dink-adapter/index.mjs"
+    start_order: 2
+    depends_on: sandbox-agent
+    env:
+      DINK_NATS_URL: "nats://78.47.49.84:4222"
+      SANDBOX_AGENT_URL: "http://localhost:2468"
+    description: "Dink edge sidecar — registers VM as Dink edge, proxies RPC"
+
+# Filesystem layout
+filesystem:
+  # Workspace mount point (populated by Gondolin VFS from host)
+  - path: /workspace
+    type: mount
+    description: "sandboxfs FUSE mount → host AgentFS SQLite"
+
+  # Dink adapter runtime
+  - path: /opt/dink-adapter
+    type: directory
+    description: "dink-adapter bundle and node_modules"
+
+  # Temp directories (tmpfs)
+  - path: /tmp
+    type: tmpfs
+  - path: /root
+    type: tmpfs
+  - path: /var/tmp
+    type: tmpfs
+
+# Security hardening
+security:
+  # No SSH daemon
+  no_sshd: true
+  # Read-only root filesystem (writes go to overlay)
+  readonly_root: false
+  # Drop unnecessary capabilities
+  drop_capabilities:
+    - NET_RAW
+    - SYS_ADMIN

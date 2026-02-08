@@ -1,0 +1,10 @@
+version: v1
+name: buf.build/earendil-works/gondolin
+breaking:
+  use:
+    - FILE
+lint:
+  use:
+    - STANDARD
+  except:
+    - PACKAGE_VERSION_SUFFIX

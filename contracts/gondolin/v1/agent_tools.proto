@@ -1,0 +1,342 @@
+syntax = "proto3";
+
+package gondolin.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// AgentToolsService provides file operations and command execution.
+// Exposed on the Gondolin host edge (role=host).
+// Serves both LLM tool calls and browser file operations via Dink RPC.
+service AgentToolsService {
+  // ExecCommand runs a shell command in the sandbox.
+  rpc ExecCommand(ExecCommandRequest) returns (ExecCommandResponse);
+
+  // ReadFile reads a file from the workspace.
+  rpc ReadFile(ReadFileRequest) returns (ReadFileResponse);
+
+  // WriteFile writes content to a file in the workspace.
+  rpc WriteFile(WriteFileRequest) returns (WriteFileResponse);
+
+  // DeleteFile removes a file or directory from the workspace.
+  rpc DeleteFile(DeleteFileRequest) returns (DeleteFileResponse);
+
+  // ListFiles lists files and directories in the workspace.
+  rpc ListFiles(ListFilesRequest) returns (ListFilesResponse);
+
+  // SearchCodebase searches for text patterns across the workspace.
+  rpc SearchCodebase(SearchCodebaseRequest) returns (SearchCodebaseResponse);
+
+  // RunTests executes the project's test suite.
+  rpc RunTests(RunTestsRequest) returns (RunTestsResponse);
+
+  // InstallPackage installs a package dependency.
+  rpc InstallPackage(InstallPackageRequest) returns (InstallPackageResponse);
+
+  // ExportPatch generates a unified diff of all workspace changes.
+  rpc ExportPatch(ExportPatchRequest) returns (ExportPatchResponse);
+}
+
+// WorkspaceService manages sandbox lifecycle.
+// Exposed on the Gondolin host edge (role=host).
+// Called from Convex actions via callEdge().
+service WorkspaceService {
+  // CreateSandbox provisions and starts a new Gondolin VM sandbox.
+  rpc CreateSandbox(CreateSandboxRequest) returns (CreateSandboxResponse);
+
+  // DestroySandbox shuts down and removes a sandbox.
+  rpc DestroySandbox(DestroySandboxRequest) returns (DestroySandboxResponse);
+
+  // GetStatus returns the current status and health of a sandbox.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  // ListSandboxes returns all sandboxes, optionally filtered by workspace.
+  rpc ListSandboxes(ListSandboxesRequest) returns (ListSandboxesResponse);
+}
+
+// ============================================================================
+// Common Types
+// ============================================================================
+
+// FileType describes the kind of filesystem entry.
+enum FileType {
+  FILE_TYPE_UNSPECIFIED = 0;
+  FILE_TYPE_FILE = 1;
+  FILE_TYPE_DIRECTORY = 2;
+  FILE_TYPE_SYMLINK = 3;
+}
+
+// FileInfo describes a file or directory in the workspace.
+message FileInfo {
+  string path = 1;
+  string name = 2;
+  int64 size = 3;
+  FileType type = 4;
+  int32 mode = 5;
+  google.protobuf.Timestamp modified_at = 6;
+  google.protobuf.Timestamp created_at = 7;
+}
+
+// ExecResult contains the output of a command execution.
+message ExecResult {
+  int32 exit_code = 1;
+  string stdout = 2;
+  string stderr = 3;
+}
+
+// ChangeType describes the kind of file modification.
+enum ChangeType {
+  CHANGE_TYPE_UNSPECIFIED = 0;
+  CHANGE_TYPE_ADDED = 1;
+  CHANGE_TYPE_MODIFIED = 2;
+  CHANGE_TYPE_DELETED = 3;
+}
+
+// FileChange represents a single file modification in the workspace.
+message FileChange {
+  string path = 1;
+  ChangeType type = 2;
+  string diff = 3;
+}
+
+// PatchOutput contains a unified diff and summary of all workspace changes.
+message PatchOutput {
+  string content = 1;
+  int32 files_changed = 2;
+  int32 lines_added = 3;
+  int32 lines_removed = 4;
+  repeated FileChange changes = 5;
+}
+
+// SandboxStatus describes the lifecycle state of a sandbox.
+enum SandboxStatus {
+  SANDBOX_STATUS_UNSPECIFIED = 0;
+  SANDBOX_STATUS_PROVISIONING = 1;
+  SANDBOX_STATUS_STARTING = 2;
+  SANDBOX_STATUS_READY = 3;
+  SANDBOX_STATUS_RUNNING = 4;
+  SANDBOX_STATUS_STOPPING = 5;
+  SANDBOX_STATUS_STOPPED = 6;
+  SANDBOX_STATUS_FAILED = 7;
+}
+
+// ============================================================================
+// AgentToolsService Messages
+// ============================================================================
+
+message ExecCommandRequest {
+  string command = 1;
+  string cwd = 2;
+  map<string, string> env = 3;
+  int32 timeout_ms = 4;
+}
+
+message ExecCommandResponse {
+  ExecResult result = 1;
+}
+
+message ReadFileRequest {
+  string path = 1;
+  string encoding = 2;
+  int64 offset = 3;
+  int64 length = 4;
+}
+
+message ReadFileResponse {
+  string content = 1;
+  FileInfo info = 2;
+}
+
+message WriteFileRequest {
+  string path = 1;
+  string content = 2;
+  string encoding = 3;
+  bool create_dirs = 4;
+  int32 mode = 5;
+}
+
+message WriteFileResponse {
+  FileInfo info = 1;
+}
+
+message DeleteFileRequest {
+  string path = 1;
+  bool recursive = 2;
+}
+
+message DeleteFileResponse {
+  bool deleted = 1;
+}
+
+message ListFilesRequest {
+  string path = 1;
+  bool recursive = 2;
+  string pattern = 3;
+  bool include_hidden = 4;
+}
+
+message ListFilesResponse {
+  repeated FileInfo files = 1;
+}
+
+message SearchCodebaseRequest {
+  string pattern = 1;
+  string path = 2;
+  string file_pattern = 3;
+  bool case_sensitive = 4;
+  int32 max_results = 5;
+  int32 context_lines = 6;
+}
+
+// SearchMatch represents a single search result with context.
+message SearchMatch {
+  string path = 1;
+  int32 line = 2;
+  int32 column = 3;
+  string text = 4;
+  repeated string context_before = 5;
+  repeated string context_after = 6;
+}
+
+message SearchCodebaseResponse {
+  repeated SearchMatch matches = 1;
+  int32 total_matches = 2;
+  bool truncated = 3;
+}
+
+message RunTestsRequest {
+  string path = 1;
+  string pattern = 2;
+  map<string, string> env = 3;
+  int32 timeout_ms = 4;
+}
+
+message RunTestsResponse {
+  ExecResult result = 1;
+  int32 total = 2;
+  int32 passed = 3;
+  int32 failed = 4;
+  int32 skipped = 5;
+}
+
+message InstallPackageRequest {
+  string package_name = 1;
+  string version = 2;
+  bool dev = 3;
+  string package_manager = 4;
+}
+
+message InstallPackageResponse {
+  ExecResult result = 1;
+  string installed_version = 2;
+}
+
+message ExportPatchRequest {
+  string base_path = 1;
+  repeated string paths = 2;
+}
+
+message ExportPatchResponse {
+  PatchOutput patch = 1;
+}
+
+// ============================================================================
+// WorkspaceService Messages
+// ============================================================================
+
+// SandboxResources defines resource limits for a sandbox.
+message SandboxResources {
+  double cpu = 1;
+  int32 memory_mb = 2;
+  int32 disk_mb = 3;
+}
+
+// GitRepoConfig specifies a git repository for workspace overlay.
+message GitRepoConfig {
+  string url = 1;
+  string branch = 2;
+  string commit = 3;
+  string sub_path = 4;
+}
+
+// SandboxConfig contains the full configuration for sandbox creation.
+message SandboxConfig {
+  SandboxResources resources = 1;
+  string agent = 2;
+  GitRepoConfig git_repo = 3;
+  map<string, string> environment = 4;
+  string image = 5;
+  int32 timeout_seconds = 6;
+  bool network_enabled = 7;
+  string working_directory = 8;
+}
+
+message CreateSandboxRequest {
+  string workspace_id = 1;
+  string workload_id = 2;
+  SandboxConfig config = 3;
+}
+
+message CreateSandboxResponse {
+  string sandbox_id = 1;
+  SandboxStatus status = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message DestroySandboxRequest {
+  string sandbox_id = 1;
+  bool preserve_agentfs = 2;
+  bool extract_changes = 3;
+  bool force = 4;
+}
+
+message DestroySandboxResponse {
+  bool destroyed = 1;
+  PatchOutput changes = 2;
+}
+
+message GetStatusRequest {
+  string sandbox_id = 1;
+}
+
+// SandboxMetrics contains resource usage statistics for a sandbox.
+message SandboxMetrics {
+  double cpu_percent = 1;
+  double memory_usage_mb = 2;
+  double disk_usage_mb = 3;
+  int64 network_bytes_sent = 4;
+  int64 network_bytes_received = 5;
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+message GetStatusResponse {
+  string sandbox_id = 1;
+  string workspace_id = 2;
+  string workload_id = 3;
+  SandboxStatus status = 4;
+  string agent = 5;
+  SandboxResources resources = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp started_at = 8;
+  string error = 9;
+  SandboxMetrics metrics = 10;
+}
+
+// SandboxInfo is a summary of a sandbox for listing.
+message SandboxInfo {
+  string sandbox_id = 1;
+  string workspace_id = 2;
+  string workload_id = 3;
+  SandboxStatus status = 4;
+  string agent = 5;
+  google.protobuf.Timestamp created_at = 6;
+  google.protobuf.Timestamp started_at = 7;
+}
+
+message ListSandboxesRequest {
+  string workspace_id = 1;
+  bool active_only = 2;
+}
+
+message ListSandboxesResponse {
+  repeated SandboxInfo sandboxes = 1;
+}

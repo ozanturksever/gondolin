@@ -1,0 +1,257 @@
+syntax = "proto3";
+
+package gondolin.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// AgentService manages AI agent sessions inside the Gondolin VM.
+// Exposed on the VM edge (role=vm) via the dink-adapter sidecar.
+// Proxies to sandbox-agent HTTP API on localhost:2468.
+service AgentService {
+  // CreateSession starts a new AI agent session.
+  rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+
+  // SendMessage sends a user message to an active session.
+  rpc SendMessage(SendMessageRequest) returns (SendMessageResponse);
+
+  // TerminateSession stops an active agent session.
+  rpc TerminateSession(TerminateSessionRequest) returns (TerminateSessionResponse);
+
+  // ListSessions returns all sessions on this VM.
+  rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+
+  // GetEvents retrieves past events for a session.
+  rpc GetEvents(GetEventsRequest) returns (GetEventsResponse);
+
+  // ReplyQuestion answers a human-in-the-loop question from the agent.
+  rpc ReplyQuestion(ReplyQuestionRequest) returns (ReplyQuestionResponse);
+
+  // ReplyPermission responds to an agent permission request.
+  rpc ReplyPermission(ReplyPermissionRequest) returns (ReplyPermissionResponse);
+}
+
+// AgentEventStreamService provides real-time event streaming from agent sessions.
+// Bridges sandbox-agent SSE to Dink NATS streaming.
+service AgentEventStreamService {
+  // StreamEvents subscribes to real-time events from an agent session.
+  rpc StreamEvents(StreamEventsRequest) returns (stream StreamEventsResponse);
+}
+
+// TerminalService provides PTY terminal access via node-pty.
+// No SSH needed — all terminal access is via Dink streaming.
+service TerminalService {
+  // Open creates a new terminal session with the given dimensions.
+  rpc Open(OpenRequest) returns (OpenResponse);
+
+  // Input sends keystrokes to a terminal session.
+  rpc Input(InputRequest) returns (InputResponse);
+
+  // Resize changes the terminal dimensions.
+  rpc Resize(ResizeRequest) returns (ResizeResponse);
+
+  // StreamOutput subscribes to real-time terminal output.
+  rpc StreamOutput(StreamOutputRequest) returns (stream StreamOutputResponse);
+}
+
+// ============================================================================
+// Enums
+// ============================================================================
+
+// AgentType identifies the AI agent implementation.
+enum AgentType {
+  AGENT_TYPE_UNSPECIFIED = 0;
+  AGENT_TYPE_CLAUDE = 1;
+  AGENT_TYPE_CODEX = 2;
+  AGENT_TYPE_OPENCODE = 3;
+  AGENT_TYPE_AMP = 4;
+  AGENT_TYPE_CODEBUFF = 5;
+  AGENT_TYPE_MOCK = 6;
+  AGENT_TYPE_CUSTOM = 7;
+}
+
+// PermissionMode controls how the agent handles permission requests.
+enum PermissionMode {
+  PERMISSION_MODE_UNSPECIFIED = 0;
+  PERMISSION_MODE_AUTO = 1;
+  PERMISSION_MODE_ASK = 2;
+  PERMISSION_MODE_PLAN = 3;
+}
+
+// SessionStatus describes the lifecycle state of an agent session.
+enum SessionStatus {
+  SESSION_STATUS_UNSPECIFIED = 0;
+  SESSION_STATUS_STARTING = 1;
+  SESSION_STATUS_RUNNING = 2;
+  SESSION_STATUS_COMPLETED = 3;
+  SESSION_STATUS_FAILED = 4;
+}
+
+// EventType classifies agent events in the universal event schema.
+enum EventType {
+  EVENT_TYPE_UNSPECIFIED = 0;
+  EVENT_TYPE_SESSION_STARTED = 1;
+  EVENT_TYPE_SESSION_ENDED = 2;
+  EVENT_TYPE_ITEM = 3;
+  EVENT_TYPE_ITEM_DELTA = 4;
+  EVENT_TYPE_QUESTION = 5;
+  EVENT_TYPE_PERMISSION = 6;
+  EVENT_TYPE_ERROR = 7;
+}
+
+// ============================================================================
+// Core Event Types
+// ============================================================================
+
+// UniversalEvent is the canonical event type from sandbox-agent.
+// Matches the universal event schema across all AI agent implementations.
+message UniversalEvent {
+  int32 id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  string session_id = 3;
+  string agent = 4;
+  EventType type = 5;
+  google.protobuf.Struct data = 6;
+}
+
+// ============================================================================
+// AgentService Messages
+// ============================================================================
+
+message CreateSessionRequest {
+  string session_id = 1;
+  AgentType agent = 2;
+  string agent_mode = 3;
+  PermissionMode permission_mode = 4;
+  string model = 5;
+  string working_directory = 6;
+  map<string, string> env = 7;
+}
+
+message CreateSessionResponse {
+  string session_id = 1;
+  SessionStatus status = 2;
+  google.protobuf.Timestamp created_at = 3;
+}
+
+message SendMessageRequest {
+  string session_id = 1;
+  string content = 2;
+  string working_directory = 3;
+  string model = 4;
+  google.protobuf.Struct options = 5;
+}
+
+message SendMessageResponse {
+  bool accepted = 1;
+}
+
+message TerminateSessionRequest {
+  string session_id = 1;
+}
+
+message TerminateSessionResponse {
+  bool terminated = 1;
+}
+
+message ListSessionsRequest {}
+
+// SessionInfo is a summary of an agent session.
+message SessionInfo {
+  string session_id = 1;
+  AgentType agent = 2;
+  SessionStatus status = 3;
+  google.protobuf.Timestamp created_at = 4;
+  int32 event_count = 5;
+}
+
+message ListSessionsResponse {
+  repeated SessionInfo sessions = 1;
+}
+
+message GetEventsRequest {
+  string session_id = 1;
+  int32 offset = 2;
+  int32 limit = 3;
+}
+
+message GetEventsResponse {
+  repeated UniversalEvent events = 1;
+  int32 total = 2;
+}
+
+message ReplyQuestionRequest {
+  string session_id = 1;
+  string question_id = 2;
+  repeated string answers = 3;
+}
+
+message ReplyQuestionResponse {
+  bool accepted = 1;
+}
+
+message ReplyPermissionRequest {
+  string session_id = 1;
+  string permission_id = 2;
+  string reply = 3;
+}
+
+message ReplyPermissionResponse {
+  bool accepted = 1;
+}
+
+// ============================================================================
+// AgentEventStreamService Messages
+// ============================================================================
+
+message StreamEventsRequest {
+  string session_id = 1;
+  int32 from_id = 2;
+}
+
+// StreamEventsResponse wraps a UniversalEvent for streaming.
+message StreamEventsResponse {
+  UniversalEvent event = 1;
+}
+
+// ============================================================================
+// TerminalService Messages
+// ============================================================================
+
+message OpenRequest {
+  int32 cols = 1;
+  int32 rows = 2;
+  string shell = 3;
+  string cwd = 4;
+  map<string, string> env = 5;
+}
+
+message OpenResponse {
+  string stream_id = 1;
+}
+
+message InputRequest {
+  string stream_id = 1;
+  bytes data = 2;
+}
+
+message InputResponse {}
+
+message ResizeRequest {
+  string stream_id = 1;
+  int32 cols = 2;
+  int32 rows = 3;
+}
+
+message ResizeResponse {}
+
+message StreamOutputRequest {
+  string stream_id = 1;
+}
+
+// StreamOutputResponse carries raw PTY output bytes with metadata.
+message StreamOutputResponse {
+  string stream_id = 1;
+  bytes data = 2;
+  google.protobuf.Timestamp timestamp = 3;
+}
