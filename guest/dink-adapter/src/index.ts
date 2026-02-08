@@ -15,13 +15,13 @@ export * from "./types.js";
 // Entry point — only runs when executed as a script (not when imported)
 // ---------------------------------------------------------------------------
 
-const DINKD_URL = process.env.DINKD_URL ?? "nats://78.47.49.84:4222";
-const WORKSPACE_ID = process.env.WORKSPACE_ID ?? "default";
-const AGENT_TYPE = process.env.AGENT_TYPE ?? "claude";
-const SANDBOX_AGENT_URL = process.env.SANDBOX_AGENT_URL ?? "http://localhost:2468";
-const HEALTH_TIMEOUT_MS = 30_000;
-
 async function main(): Promise<void> {
+  const DINKD_URL = process.env.DINKD_URL ?? "nats://78.47.49.84:4222";
+  const WORKSPACE_ID = process.env.WORKSPACE_ID ?? "default";
+  const AGENT_TYPE = process.env.AGENT_TYPE ?? "claude";
+  const SANDBOX_AGENT_URL = process.env.SANDBOX_AGENT_URL ?? "http://localhost:2468";
+  const HEALTH_TIMEOUT_MS = 30_000;
+
   console.log(`[dink-adapter] starting (workspace=${WORKSPACE_ID}, agent=${AGENT_TYPE})`);
   console.log(`[dink-adapter] dinkd=${DINKD_URL}, sandbox-agent=${SANDBOX_AGENT_URL}`);
 

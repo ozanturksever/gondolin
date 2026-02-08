@@ -99,8 +99,8 @@ function collectSender(): {
 // ---------------------------------------------------------------------------
 
 test("Open spawns PTY and returns streamId", async () => {
-  const { spawnFn, ptys, lastArgs } = createMockSpawn();
-  const svc = new TerminalServiceImpl(spawnFn);
+  const mock = createMockSpawn();
+  const svc = new TerminalServiceImpl(mock.spawnFn);
 
   const resp = await svc.Open({
     cols: 120,
@@ -112,20 +112,20 @@ test("Open spawns PTY and returns streamId", async () => {
 
   assert.ok(resp.streamId);
   assert.equal(typeof resp.streamId, "string");
-  assert.equal(ptys.length, 1);
-  assert.equal(lastArgs!.file, "/bin/zsh");
-  assert.equal((lastArgs!.options as { cols: number }).cols, 120);
-  assert.equal((lastArgs!.options as { rows: number }).rows, 40);
-  assert.equal((lastArgs!.options as { cwd: string }).cwd, "/home");
+  assert.equal(mock.ptys.length, 1);
+  assert.equal(mock.lastArgs!.file, "/bin/zsh");
+  assert.equal((mock.lastArgs!.options as { cols: number }).cols, 120);
+  assert.equal((mock.lastArgs!.options as { rows: number }).rows, 40);
+  assert.equal((mock.lastArgs!.options as { cwd: string }).cwd, "/home");
 });
 
 test("Open defaults shell to /bin/bash", async () => {
-  const { spawnFn, lastArgs } = createMockSpawn();
-  const svc = new TerminalServiceImpl(spawnFn);
+  const mock = createMockSpawn();
+  const svc = new TerminalServiceImpl(mock.spawnFn);
 
   await svc.Open({ cols: 80, rows: 24, shell: "", cwd: "", env: {} });
 
-  assert.equal(lastArgs!.file, "/bin/bash");
+  assert.equal(mock.lastArgs!.file, "/bin/bash");
 });
 
 // ---------------------------------------------------------------------------
