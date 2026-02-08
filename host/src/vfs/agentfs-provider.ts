@@ -99,6 +99,8 @@ export interface WorkspaceInitOptions {
   files?: Record<string, string | Buffer>;
   /** Change hooks for sync integration */
   hooks?: AgentFSChangeHooks;
+  /** Base filesystem for COW overlay mode. When provided, all writes go to an in-memory overlay and the base is never mutated. */
+  baseFS?: AgentFSLike;
 }
 
 /**
@@ -118,8 +120,16 @@ export async function initializeWorkspace(
 
   nodeFs.mkdirSync(wsDir, { recursive: true });
 
-  const dbPath = options.dbPath ?? nodePath.join(wsDir, "workspace.db");
-  const agentfs = await openFS(dbPath);
+  let agentfs: AgentFSLike;
+
+  if (options.baseFS) {
+    // COW overlay mode: wrap base FS so it is never mutated
+    const { CowOverlayFS } = await import("./cow-overlay");
+    agentfs = new CowOverlayFS(options.baseFS);
+  } else {
+    const dbPath = options.dbPath ?? nodePath.join(wsDir, "workspace.db");
+    agentfs = await openFS(dbPath);
+  }
 
   if (options.files) {
     for (const [filePath, content] of Object.entries(options.files)) {

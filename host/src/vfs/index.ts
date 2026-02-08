@@ -34,3 +34,5 @@ export type {
   AgentFSChangeHooks,
   WorkspaceInitOptions,
 } from "./agentfs-provider";
+export { CowOverlayFS } from "./cow-overlay";
+export type { OverlayChange, OverlayEntry } from "./cow-overlay";

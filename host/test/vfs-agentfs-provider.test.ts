@@ -10,6 +10,7 @@ import {
   type AgentFSDirEntryLike,
   type AgentFSChangeHooks,
 } from "../src/vfs/agentfs-provider";
+import { CowOverlayFS } from "../src/vfs/cow-overlay";
 
 // ---------------------------------------------------------------------------
 // Mock AgentFS — in-memory filesystem implementing AgentFSLike
@@ -515,14 +516,158 @@ test("B-TEST-7f: open with exclusive flag on existing → EEXIST", async () => {
 });
 
 // ---------------------------------------------------------------------------
-// B-TEST-8 & 9: COW overlay (deferred — requires real AgentFS + git repo)
+// B-TEST-8: COW overlay write — base unchanged, diff() shows the write
 // ---------------------------------------------------------------------------
 
-test("B-TEST-8/9: COW overlay (placeholder — requires real AgentFS integration)", { skip: "Requires real AgentFS SDK with SQLite backend" }, async () => {
-  // COW overlay testing requires:
-  // 1. Real AgentFS.open({ path: 'db', baseDir: '/repo' })
-  // 2. A git repository as base layer
-  // Will be tested as integration tests with the actual SDK.
+test("B-TEST-8: COW overlay write — base dir unchanged, diff() shows the write", async () => {
+  const base = new MockAgentFS();
+  await base.writeFile("/README.md", "original readme");
+  await base.writeFile("/src/main.ts", "console.log('hello')");
+
+  const cow = new CowOverlayFS(base);
+
+  // Write a new file through the overlay
+  await cow.writeFile("/new-file.txt", "brand new content");
+  // Modify an existing file through the overlay
+  await cow.writeFile("/README.md", "updated readme");
+
+  // Base must be untouched
+  const baseReadme = await base.readFile("/README.md", "utf8");
+  assert.equal(baseReadme, "original readme");
+  // new-file.txt should not exist in base
+  await assert.rejects(() => base.stat("/new-file.txt"), isCode("ENOENT"));
+
+  // Overlay should see the changes
+  const overlayReadme = await cow.readFile("/README.md", "utf8") as string;
+  assert.equal(overlayReadme, "updated readme");
+  const newFile = await cow.readFile("/new-file.txt", "utf8") as string;
+  assert.equal(newFile, "brand new content");
+
+  // listChanges should report both
+  const changes = cow.listChanges();
+  const readmeChange = changes.find((c) => c.path === "/README.md");
+  const newFileChange = changes.find((c) => c.path === "/new-file.txt");
+  assert.ok(readmeChange);
+  assert.equal(readmeChange!.type, "modified");
+  assert.ok(newFileChange);
+  assert.equal(newFileChange!.type, "added");
+
+  // diff() should contain both entries
+  const patch = await cow.diff();
+  assert.ok(patch.includes("diff --git a/README.md b/README.md"));
+  assert.ok(patch.includes("+updated readme"));
+  assert.ok(patch.includes("diff --git a/new-file.txt b/new-file.txt"));
+  assert.ok(patch.includes("new file mode"));
+  assert.ok(patch.includes("+brand new content"));
+});
+
+// ---------------------------------------------------------------------------
+// B-TEST-9: COW overlay delete — base unchanged, listChanges() shows deletion
+// ---------------------------------------------------------------------------
+
+test("B-TEST-9: COW overlay delete — base unchanged, listChanges() shows deletion", async () => {
+  const base = new MockAgentFS();
+  await base.writeFile("/keep.txt", "keep me");
+  await base.writeFile("/remove.txt", "delete me");
+
+  const cow = new CowOverlayFS(base);
+
+  // Delete a file through the overlay
+  await cow.unlink("/remove.txt");
+
+  // Base must still have the file
+  const baseContent = await base.readFile("/remove.txt", "utf8");
+  assert.equal(baseContent, "delete me");
+
+  // Overlay should report ENOENT
+  await assert.rejects(() => cow.stat("/remove.txt"), isCode("ENOENT"));
+
+  // /keep.txt should still be visible through overlay
+  const keepContent = await cow.readFile("/keep.txt", "utf8") as string;
+  assert.equal(keepContent, "keep me");
+
+  // readdir should not include removed file
+  const entries = await cow.readdir("/");
+  assert.ok(entries.includes("keep.txt"));
+  assert.ok(!entries.includes("remove.txt"));
+
+  // listChanges should report the deletion
+  const changes = cow.listChanges();
+  const deleteChange = changes.find((c) => c.path === "/remove.txt");
+  assert.ok(deleteChange);
+  assert.equal(deleteChange!.type, "deleted");
+
+  // diff() should show deleted file
+  const patch = await cow.diff();
+  assert.ok(patch.includes("deleted file mode"));
+  assert.ok(patch.includes("-delete me"));
+});
+
+test("COW overlay reset discards all changes", async () => {
+  const base = new MockAgentFS();
+  await base.writeFile("/file.txt", "original");
+
+  const cow = new CowOverlayFS(base);
+  await cow.writeFile("/file.txt", "modified");
+  await cow.writeFile("/added.txt", "new");
+
+  assert.equal(cow.listChanges().length, 2);
+
+  cow.reset();
+
+  assert.equal(cow.listChanges().length, 0);
+  const content = await cow.readFile("/file.txt", "utf8") as string;
+  assert.equal(content, "original");
+  await assert.rejects(() => cow.stat("/added.txt"), isCode("ENOENT"));
+});
+
+test("COW overlay file handles — lazy copy-up on write", async () => {
+  const base = new MockAgentFS();
+  await base.writeFile("/handle.txt", "base content");
+
+  const cow = new CowOverlayFS(base);
+
+  // Open file (no copy-up yet)
+  const fh = await cow.open("/handle.txt");
+
+  // Read should work without creating overlay entry
+  const data = await fh.pread(0, 4);
+  assert.equal(data.toString(), "base");
+  assert.equal(cow.listChanges().length, 0);
+
+  // Write triggers copy-up
+  await fh.pwrite(0, Buffer.from("OVER"));
+  assert.equal(cow.listChanges().length, 1);
+  assert.equal(cow.listChanges()[0].type, "modified");
+
+  // Base unchanged
+  const baseContent = await base.readFile("/handle.txt", "utf8");
+  assert.equal(baseContent, "base content");
+
+  // Read back through overlay
+  const full = await cow.readFile("/handle.txt", "utf8") as string;
+  assert.equal(full, "OVER content");
+});
+
+test("COW overlay rename — source deleted, dest added/modified", async () => {
+  const base = new MockAgentFS();
+  await base.writeFile("/src.txt", "source data");
+
+  const cow = new CowOverlayFS(base);
+  await cow.rename("/src.txt", "/dest.txt");
+
+  // Base unchanged
+  const baseSrc = await base.readFile("/src.txt", "utf8");
+  assert.equal(baseSrc, "source data");
+
+  // Overlay: source gone, dest exists
+  await assert.rejects(() => cow.stat("/src.txt"), isCode("ENOENT"));
+  const destContent = await cow.readFile("/dest.txt", "utf8") as string;
+  assert.equal(destContent, "source data");
+
+  const changes = cow.listChanges();
+  assert.ok(changes.find((c) => c.path === "/src.txt" && c.type === "deleted"));
+  assert.ok(changes.find((c) => c.path === "/dest.txt" && c.type === "added"));
 });
 
 // ---------------------------------------------------------------------------
@@ -569,11 +714,53 @@ test("B-TEST-10: initializeWorkspace creates provider with initial files", async
 });
 
 // ---------------------------------------------------------------------------
-// B-TEST-11: initializeWorkspace with git repo (deferred)
+// B-TEST-11: initializeWorkspace with baseFS (COW overlay mode)
 // ---------------------------------------------------------------------------
 
-test("B-TEST-11: initializeWorkspace with git repo (placeholder)", { skip: "Requires real git repo + AgentFS SDK" }, async () => {
-  // Will be tested as integration tests.
+test("B-TEST-11: initializeWorkspace with baseFS creates COW overlay provider", async () => {
+  const { initializeWorkspace } = await import("../src/vfs/agentfs-provider");
+
+  const base = new MockAgentFS();
+  await base.writeFile("/base-file.txt", "from base");
+
+  const tmpDir = `/tmp/gondolin-test-cow-${Date.now()}`;
+
+  try {
+    const provider = await initializeWorkspace(
+      async () => { throw new Error("openFS should not be called in COW mode"); },
+      {
+        workspaceId: "test-cow-ws",
+        dbPath: `${tmpDir}/workspace.db`,
+        baseFS: base,
+        files: {
+          "/overlay-file.txt": "added via overlay",
+        },
+      },
+    );
+
+    // Base file visible through provider
+    const baseContent = await provider.readFile!("/base-file.txt", { encoding: "utf8" });
+    assert.equal(baseContent, "from base");
+
+    // Overlay file visible
+    const overlayContent = await provider.readFile!("/overlay-file.txt", { encoding: "utf8" });
+    assert.equal(overlayContent, "added via overlay");
+
+    // Write through provider goes to overlay, base untouched
+    await provider.writeFile!("/base-file.txt", "modified");
+    const baseOriginal = await base.readFile("/base-file.txt", "utf8");
+    assert.equal(baseOriginal, "from base");
+
+    // Underlying FS should be a CowOverlayFS
+    const fs = provider.getFilesystem();
+    assert.ok(fs instanceof CowOverlayFS);
+
+    const changes = (fs as InstanceType<typeof CowOverlayFS>).listChanges();
+    assert.ok(changes.length >= 2); // overlay-file.txt added + base-file.txt modified
+  } finally {
+    const fsNode = await import("node:fs");
+    fsNode.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
